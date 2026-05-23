@@ -9,8 +9,7 @@ import sys
 from pathlib import Path
 
 from config import Config
-from MusicLyrics import bot, userbot, __version__
-from MusicLyrics.userbot import pytgcalls
+from MusicLyrics import bot, userbot, pytgcalls, __version__
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,10 +42,18 @@ async def _send_startup_message():
     """Send a branded startup notification to LOG_GROUP_ID."""
     if not Config.LOG_GROUP_ID:
         return
+    bot_me = await bot.get_me()
+    user_info = "N/A (no userbot)"
+    if userbot:
+        try:
+            user_me = await userbot.get_me()
+            user_info = user_me.first_name
+        except Exception:
+            user_info = "N/A"
     text = (
         f"**MusicLyrics v{__version__} Started**\n\n"
-        f"Bot  : @{(await bot.get_me()).username}\n"
-        f"User : {(await userbot.get_me()).first_name}\n\n"
+        f"Bot  : @{bot_me.username}\n"
+        f"User : {user_info}\n\n"
         f"[Support]({Config.SUPPORT_GROUP}) | "
         f"[Channel]({Config.SUPPORT_CHANNEL}) | "
         f"[Owner]({Config.OWNER_LINK})"
@@ -73,7 +80,7 @@ async def main():
     await bot.start()
     LOG.info("Bot client started.")
 
-    if Config.STRING_SESSION:
+    if Config.STRING_SESSION and userbot and pytgcalls:
         await userbot.start()
         LOG.info("Userbot client started.")
         await pytgcalls.start()
@@ -100,8 +107,9 @@ async def main():
 
     # Graceful shutdown
     LOG.info("Shutting down MusicLyrics...")
-    if Config.STRING_SESSION:
+    if Config.STRING_SESSION and pytgcalls:
         await pytgcalls.stop()
+    if Config.STRING_SESSION and userbot:
         await userbot.stop()
     await bot.stop()
     LOG.info("Goodbye.")

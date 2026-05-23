@@ -17,6 +17,18 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
+<h2 align="center">One-Click Deploy / এক ক্লিকে ডিপ্লয়</h2>
+
+<p align="center">
+  <a href="https://heroku.com/deploy?template=https://github.com/RajSukh81/MusicLyrics"><img src="https://www.herokucdn.com/deploy/button.svg" alt="Deploy to Heroku" height="40"></a>
+  &nbsp;&nbsp;
+  <a href="https://railway.app/new/template?template=https://github.com/RajSukh81/MusicLyrics&envs=API_ID,API_HASH,BOT_TOKEN,STRING_SESSION,MONGO_URL,OWNER_ID"><img src="https://railway.app/button.svg" alt="Deploy on Railway" height="40"></a>
+  &nbsp;&nbsp;
+  <a href="https://render.com/deploy?repo=https://github.com/RajSukh81/MusicLyrics"><img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" height="40"></a>
+  &nbsp;&nbsp;
+  <a href="https://app.koyeb.com/deploy?type=git&repository=https://github.com/RajSukh81/MusicLyrics&branch=main&name=musiclyrics"><img src="https://www.koyeb.com/static/images/deploy/button.svg" alt="Deploy to Koyeb" height="40"></a>
+</p>
+
 <p align="center">
   <a href="https://t.me/+OvozYu7R1EczMGJl">Support Group</a> &bull;
   <a href="https://t.me/RupkothaGolpo">Updates Channel</a> &bull;
@@ -76,11 +88,68 @@
 
 ## Deployment
 
-### Prerequisites
-- Python 3.11+
-- FFmpeg installed on the system
-- A MongoDB database (local or Atlas)
-- A Telegram userbot string session (for py-tgcalls)
+### Prerequisites (ডিপ্লয় করার আগে যা লাগবে)
+
+1. **MongoDB Atlas (ফ্রি)** — [mongodb.com/atlas](https://www.mongodb.com/atlas) থেকে একটি cluster তৈরি করো, connection string কপি করো, Network Access-এ `0.0.0.0/0` allow করো
+2. **Telegram API credentials** — [my.telegram.org](https://my.telegram.org) থেকে `API_ID` ও `API_HASH` নাও
+3. **Bot Token** — [@BotFather](https://t.me/BotFather) থেকে Bot তৈরি করে Token কপি করো
+4. **Owner ID** — তোমার Telegram User ID জানো ([@userinfobot](https://t.me/userinfobot) এ `/start` দিলে পাবে)
+5. **(Optional) String Session** — Voice chat streaming-এর জন্য একটি secondary Telegram account থেকে generate করো:
+   ```bash
+   pip install pyrogram tgcrypto
+   python3 -c "from pyrogram import Client; Client(':memory:', api_id=API_ID, api_hash='HASH').run(Client.export_session_string)"
+   ```
+
+---
+
+### Heroku (One-Click Deploy)
+
+**সবচেয়ে সহজ পদ্ধতি:**
+
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/RajSukh81/MusicLyrics)
+
+1. উপরের **Deploy to Heroku** বাটনে ক্লিক করো
+2. Heroku অ্যাকাউন্টে লগইন করো (না থাকলে সাইন আপ করো)
+3. App-এর একটি নাম দাও
+4. সব **environment variables** ফিল আপ করো (API_ID, API_HASH, BOT_TOKEN, MONGO_URL, OWNER_ID — বাকিগুলো optional)
+5. **Deploy app** বাটনে ক্লিক করো
+6. ডিপ্লয় শেষ হলে **Manage App** → **Resources** ট্যাবে যাও
+7. `web` dyno **বন্ধ** করো (যদি থাকে) এবং `worker` dyno **চালু** করো
+8. **More** → **View logs** দিয়ে বট চলছে কিনা দেখো
+
+> **Note:** Heroku Eco/Basic plan ($5/month) লাগবে। ফ্রি plan আর নেই।
+
+---
+
+### Railway (One-Click Deploy)
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/RajSukh81/MusicLyrics&envs=API_ID,API_HASH,BOT_TOKEN,STRING_SESSION,MONGO_URL,OWNER_ID)
+
+1. বাটনে ক্লিক করো → GitHub দিয়ে লগইন করো
+2. Environment variables ফিল আপ করো
+3. **Deploy** ক্লিক করো — ব্যস!
+
+---
+
+### Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/RajSukh81/MusicLyrics)
+
+1. বাটনে ক্লিক করো → Render অ্যাকাউন্টে লগইন করো
+2. **Background Worker** হিসেবে deploy করো
+3. Environment variables সেট করো → Deploy
+
+---
+
+### Koyeb
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=https://github.com/RajSukh81/MusicLyrics&branch=main&name=musiclyrics)
+
+1. বাটনে ক্লিক করো → Koyeb অ্যাকাউন্টে লগইন করো
+2. Instance type: **Worker** সিলেক্ট করো
+3. Environment variables সেট করো → Deploy
+
+---
 
 ### Local / VPS
 
@@ -105,7 +174,7 @@ cp .env.example .env
 python3 -m MusicLyrics
 ```
 
-### Docker
+### Docker (with MongoDB)
 
 ```bash
 # Configure environment
@@ -113,27 +182,11 @@ cp .env.example .env
 # Edit .env with your credentials
 
 # Build and run
-docker-compose up -d --build
+docker-compose up -d --build   # MongoDB container auto-included
 
 # View logs
 docker-compose logs -f
 ```
-
-### Heroku
-
-1. Fork this repository.
-2. Create a new Heroku app.
-3. Set all environment variables in **Settings > Config Vars**.
-4. Connect your GitHub fork in the **Deploy** tab.
-5. Deploy the `main` branch. The `Procfile` handles startup.
-
-### Railway
-
-1. Fork this repository.
-2. Create a new project on [Railway](https://railway.app/).
-3. Connect the GitHub repository.
-4. Add all required environment variables.
-5. Deploy. Railway auto-detects the `Procfile`.
 
 ---
 

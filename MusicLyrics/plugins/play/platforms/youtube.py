@@ -140,9 +140,9 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
             info = await loop.run_in_executor(
                 None, lambda: ydl.extract_info(url, download=True)
             )
-        if not info:
-            return None
-        return ydl.prepare_filename(info)
+            if not info:
+                return None
+            return ydl.prepare_filename(info)
     except Exception:
         LOG.exception("yt-dlp download failed: %s", url)
         return None

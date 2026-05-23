@@ -12,7 +12,7 @@ def start_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "➕ Add to Group",
-                    url=f"https://t.me/{Config.BOT_NAME}Bot?startgroup=true",
+                    url=f"https://t.me/{Config.BOT_NAME}?startgroup=true",
                 ),
                 InlineKeyboardButton(
                     "🆘 Support",

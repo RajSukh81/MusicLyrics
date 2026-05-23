@@ -1,7 +1,9 @@
 """Song/video download plugin for MusicLyrics bot."""
 
+import json
 import os
 import asyncio
+import re
 import tempfile
 
 from pyrogram import filters
@@ -34,19 +36,21 @@ async def _download(query: str, audio_only: bool = True) -> tuple[str | None, di
 
     url = info.get("webpage_url") or info.get("url", query)
     title = info.get("title", "Unknown")
+    # Sanitize filename — remove path separators and special chars
+    safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title)[:50]
     duration = info.get("duration", 0)
 
     dl_dir = Config.DOWNLOADS_DIR
     os.makedirs(dl_dir, exist_ok=True)
 
     if audio_only:
-        out_path = os.path.join(dl_dir, f"{title[:50]}.mp3")
+        out_path = os.path.join(dl_dir, f"{safe_title}.mp3")
         cmd = [
             "yt-dlp", "-x", "--audio-format", "mp3",
             "-o", out_path, "--no-playlist", url,
         ]
     else:
-        out_path = os.path.join(dl_dir, f"{title[:50]}.mp4")
+        out_path = os.path.join(dl_dir, f"{safe_title}.mp4")
         cmd = [
             "yt-dlp", "-f", "best[ext=mp4]/best",
             "-o", out_path, "--no-playlist", url,
@@ -64,7 +68,7 @@ async def _download(query: str, audio_only: bool = True) -> tuple[str | None, di
 
     # yt-dlp may append extension — try glob
     import glob
-    pattern = os.path.join(dl_dir, f"{title[:50]}.*")
+    pattern = os.path.join(dl_dir, f"{safe_title}.*")
     matches = glob.glob(pattern)
     if matches:
         return matches[0], info

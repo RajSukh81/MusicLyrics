@@ -8,7 +8,7 @@ import sys
 
 from config import Config
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, "logs")
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 _LOG_FILE = os.path.join(_LOG_DIR, "musiclyrics.log")
 

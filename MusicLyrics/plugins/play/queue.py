@@ -60,9 +60,12 @@ async def get_chat_queue(chat_id: int) -> ChatQueue:
 
 async def add_to_queue(chat_id: int, item: QueueItem) -> int:
     """Append *item* and return its 1-based position in the queue."""
-    cq = await get_chat_queue(chat_id)
-    cq.items.append(item)
-    position = len(cq.items)
+    async with _lock:
+        if chat_id not in _queues:
+            _queues[chat_id] = ChatQueue()
+        cq = _queues[chat_id]
+        cq.items.append(item)
+        position = len(cq.items)
     LOG.info("Queue %s: added #%d — %s", chat_id, position, item.title)
     return position
 

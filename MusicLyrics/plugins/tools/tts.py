@@ -11,19 +11,18 @@ from MusicLyrics.bot import bot
 
 
 async def _generate_tts(text: str, lang: str = "en") -> str:
-    """Generate TTS audio via gtts CLI and return file path."""
+    """Generate TTS audio via gTTS and return file path."""
+    from gtts import gTTS
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
-    proc = await asyncio.create_subprocess_exec(
-        "python3", "-c",
-        f"from gtts import gTTS; gTTS(text={text!r}, lang={lang!r}).save({path!r})",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None, lambda: gTTS(text=text, lang=lang).save(path)
+        )
+    except Exception:
         os.remove(path)
-        raise RuntimeError(stderr.decode().strip())
+        raise
     return path
 
 

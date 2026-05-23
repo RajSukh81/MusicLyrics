@@ -6,6 +6,7 @@ import os
 import uuid
 
 import aiohttp
+import aiofiles
 
 from config import Config
 
@@ -39,9 +40,9 @@ async def download_file(url: str, path: str | None = None) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
             resp.raise_for_status()
-            with open(path, "wb") as fp:
+            async with aiofiles.open(path, "wb") as fp:
                 async for chunk in resp.content.iter_chunked(1024 * 64):
-                    fp.write(chunk)
+                    await fp.write(chunk)
     return os.path.abspath(path)
 
 

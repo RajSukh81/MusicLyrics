@@ -7,12 +7,7 @@ import logging
 import os
 from typing import Optional
 
-from pytgcalls.types import (
-    AudioPiped,
-    AudioVideoPiped,
-    AudioImagePiped,
-)
-from pytgcalls.types.stream import StreamAudioEnded
+from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
 
 from MusicLyrics.bot import bot
 from MusicLyrics.userbot import pytgcalls, userbot
@@ -23,11 +18,16 @@ from MusicLyrics.plugins.play.queue import (
     clear_queue,
     format_duration,
 )
+from MusicLyrics.utils.downloader import cleanup
 
 LOG = logging.getLogger(__name__)
 
 # Track active chats so we know whether to join or change stream
 _active_chats: set[int] = set()
+
+# Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
+if pytgcalls is None:
+    LOG.warning("STRING_SESSION not set — music streaming features are disabled.")
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -41,8 +41,14 @@ async def stream_audio(
     requester: str = "",
 ) -> None:
     """Join voice chat (if needed) and start audio stream."""
+    if pytgcalls is None:
+        raise RuntimeError("Music streaming is disabled — STRING_SESSION not configured.")
     try:
-        audio = AudioPiped(file_path)
+        audio = MediaStream(
+            file_path,
+            audio_parameters=AudioQuality.HIGH,
+            video_flags=MediaStream.Flags.IGNORE,
+        )
 
         if chat_id in _active_chats:
             await pytgcalls.change_stream(chat_id, audio)
@@ -66,7 +72,11 @@ async def stream_video(
 ) -> None:
     """Join voice chat (if needed) and start video stream."""
     try:
-        stream = AudioVideoPiped(file_path)
+        stream = MediaStream(
+            file_path,
+            audio_parameters=AudioQuality.HIGH,
+            video_parameters=VideoQuality.SD_480p,
+        )
 
         if chat_id in _active_chats:
             await pytgcalls.change_stream(chat_id, stream)
@@ -88,7 +98,11 @@ async def stream_audio_with_image(
 ) -> None:
     """Stream audio with a static thumbnail image in video chat."""
     try:
-        stream = AudioImagePiped(file_path, image_path)
+        stream = MediaStream(
+            file_path,
+            audio_parameters=AudioQuality.HIGH,
+            video_flags=MediaStream.Flags.IGNORE,
+        )
 
         if chat_id in _active_chats:
             await pytgcalls.change_stream(chat_id, stream)
@@ -162,9 +176,14 @@ def is_active(chat_id: int) -> bool:
 
 # ── Stream-end callback ─────────────────────────────────────────────────────
 
-@pytgcalls.on_stream_end()
 async def _on_stream_end(client, update):
     """When current track ends, play next in queue or leave."""
+    from pytgcalls.types import Update
+    if not isinstance(update, Update):
+        return
+    # py-tgcalls 1.x: check if the stream ended
+    if not hasattr(update, "stopped_status"):
+        return
     chat_id = update.chat_id
 
     next_item = await skip_queue(chat_id)
@@ -206,3 +225,8 @@ async def _on_stream_end(client, update):
     except Exception:
         LOG.exception("Failed to play next in queue for %s", chat_id)
         await leave_voice_chat(chat_id)
+
+
+# Register the callback only if pytgcalls is available
+if pytgcalls is not None:
+    pytgcalls.on_update()(_on_stream_end)

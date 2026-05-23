@@ -12,9 +12,16 @@ class Config:
     """
 
     # ── Telegram API ─────────────────────────────────────────────────────
-    API_ID = int(os.environ["API_ID"])
-    API_HASH = os.environ["API_HASH"]
-    BOT_TOKEN = os.environ["BOT_TOKEN"]
+    try:
+        API_ID = int(os.environ["API_ID"])
+    except KeyError:
+        raise SystemExit("ERROR: API_ID environment variable is required. Get it from https://my.telegram.org")
+    API_HASH = os.environ.get("API_HASH")
+    if not API_HASH:
+        raise SystemExit("ERROR: API_HASH environment variable is required. Get it from https://my.telegram.org")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN")
+    if not BOT_TOKEN:
+        raise SystemExit("ERROR: BOT_TOKEN environment variable is required. Get it from @BotFather")
     STRING_SESSION = os.environ.get("STRING_SESSION", "")
 
     # ── Database ─────────────────────────────────────────────────────────
@@ -28,9 +35,13 @@ class Config:
         for uid in os.environ.get("SUDO_USERS", "").split()
         if uid.strip()
     ]
-    OWNER_ID: int = int(
-        os.environ.get("OWNER_ID", SUDO_USERS[0] if SUDO_USERS else 0)
-    )
+    _raw_owner = os.environ.get("OWNER_ID", "")
+    if _raw_owner.strip():
+        OWNER_ID: int = int(_raw_owner)
+    elif SUDO_USERS:
+        OWNER_ID: int = SUDO_USERS[0]
+    else:
+        OWNER_ID: int = 0
 
     # ── Logging ──────────────────────────────────────────────────────────
     LOG_GROUP_ID = int(os.environ.get("LOG_GROUP_ID", 0))
@@ -44,7 +55,7 @@ class Config:
     )
     OWNER_LINK = "https://t.me/R4J_81"
 
-    BOT_NAME = "MusicLyrics"
+    BOT_NAME = os.environ.get("BOT_USERNAME", "MusicLyrics")
     BRAND_PHOTO = (
         "https://pic-link-bot.lovable.app/i/"
         "telegram-1779340031479-5eab5504.jpg"

@@ -23,26 +23,62 @@ _flood_log: dict[int, dict[int, list[float]]] = defaultdict(
     lambda: defaultdict(list)
 )
 
+# ── Settings cache ─────────────────────────────────────────────────────────
+# {chat_id: (antiflood_on, flood_limit, flood_mode, cached_at)}
+_settings_cache: dict[int, tuple[bool, int, str, float]] = {}
+_SETTINGS_TTL = 60  # seconds
+
+# ── Admin cache ────────────────────────────────────────────────────────────
+# {(chat_id, user_id): (is_admin, cached_at)}
+_admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
+_ADMIN_TTL = 120  # seconds
+
 DEFAULT_FLOOD_LIMIT = 10
 FLOOD_WINDOW = 10  # seconds
 MUTE_DURATION = 600  # 10 minutes
 
 
 async def _get_flood_settings(chat_id: int) -> tuple[int, str]:
-    """Return (flood_limit, flood_mode) for a chat."""
+    """Return (flood_limit, flood_mode) for a chat (cached)."""
+    now = time.time()
+    cached = _settings_cache.get(chat_id)
+    if cached and now - cached[3] < _SETTINGS_TTL:
+        return cached[1], cached[2]
     doc = await get_chat(chat_id)
     if doc:
         limit = doc.get("flood_limit", DEFAULT_FLOOD_LIMIT)
         mode = doc.get("flood_mode", "mute")
-        return limit, mode
-    return DEFAULT_FLOOD_LIMIT, "mute"
+        enabled = doc.get("antiflood", True)
+    else:
+        limit, mode, enabled = DEFAULT_FLOOD_LIMIT, "mute", True
+    _settings_cache[chat_id] = (enabled, limit, mode, now)
+    return limit, mode
 
 
 async def _is_antiflood_on(chat_id: int) -> bool:
-    doc = await get_chat(chat_id)
-    if doc:
-        return doc.get("antiflood", True)
-    return True
+    now = time.time()
+    cached = _settings_cache.get(chat_id)
+    if cached and now - cached[3] < _SETTINGS_TTL:
+        return cached[0]
+    await _get_flood_settings(chat_id)  # populates cache
+    cached = _settings_cache.get(chat_id)
+    return cached[0] if cached else True
+
+
+async def _is_admin_cached(client, chat_id: int, user_id: int) -> bool:
+    """Check admin status with caching to avoid API spam."""
+    now = time.time()
+    key = (chat_id, user_id)
+    cached = _admin_cache.get(key)
+    if cached and now - cached[1] < _ADMIN_TTL:
+        return cached[0]
+    try:
+        member = await client.get_chat_member(chat_id, user_id)
+        is_admin = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        is_admin = False
+    _admin_cache[key] = (is_admin, now)
+    return is_admin
 
 
 def _is_flood(chat_id: int, user_id: int, limit: int) -> bool:
@@ -69,12 +105,8 @@ async def flood_watcher(client: Client, message: Message):
     # Skip admins / sudo
     if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
         return
-    try:
-        member = await client.get_chat_member(chat_id, user_id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
-    except Exception:
-        pass
+    if await _is_admin_cached(client, chat_id, user_id):
+        return
 
     limit, mode = await _get_flood_settings(chat_id)
     if not _is_flood(chat_id, user_id, limit):

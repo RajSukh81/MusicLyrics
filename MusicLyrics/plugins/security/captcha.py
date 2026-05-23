@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import logging
 import time
@@ -105,7 +106,9 @@ def _build_captcha_keyboard(
 ) -> InlineKeyboardMarkup:
     buttons = []
     for c in choices:
-        cb_data = f"captcha_{chat_id}_{user_id}_{1 if str(c) == str(correct) else 0}"
+        # Use a hash of the answer value so correct answer is not visible in callback_data
+        token = hashlib.sha256(f"{chat_id}_{user_id}_{c}".encode()).hexdigest()[:12]
+        cb_data = f"captcha_{chat_id}_{user_id}_{token}"
         buttons.append(InlineKeyboardButton(str(c), callback_data=cb_data))
 
     # Arrange in 2x2 grid
@@ -203,14 +206,14 @@ async def captcha_on_join(client: Client, message: Message):
 @bot.on_callback_query(filters.regex(r"^captcha_"))
 async def captcha_callback(client: Client, callback: CallbackQuery):
     data = callback.data.split("_")
-    # captcha_{chat_id}_{user_id}_{1 or 0}
+    # captcha_{chat_id}_{user_id}_{token}
     if len(data) < 4:
         await callback.answer("❌ Invalid captcha data.", show_alert=True)
         return
 
     chat_id = int(data[1])
     target_user_id = int(data[2])
-    is_correct = data[3] == "1"
+    token = data[3]
 
     if callback.from_user.id != target_user_id:
         await callback.answer(
@@ -223,6 +226,13 @@ async def captcha_callback(client: Client, callback: CallbackQuery):
         await callback.answer("ক্যাপচা মেয়াদ শেষ। / Captcha expired.", show_alert=True)
         return
 
+    # Verify answer server-side using stored correct value
+    correct = _pending[chat_id][target_user_id]["correct"]
+    expected_token = hashlib.sha256(
+        f"{chat_id}_{target_user_id}_{correct}".encode()
+    ).hexdigest()[:12]
+    is_correct = (token == expected_token)
+
     if is_correct:
         _pending[chat_id].pop(target_user_id, None)
 
@@ -233,9 +243,6 @@ async def captcha_callback(client: Client, callback: CallbackQuery):
                 target_user_id,
                 ChatPermissions(
                     can_send_messages=True,
-                    can_send_media_messages=True,
-                    can_send_other_messages=True,
-                    can_add_web_page_previews=True,
                 ),
             )
         except Exception as e:
