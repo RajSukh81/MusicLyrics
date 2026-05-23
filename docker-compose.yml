@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  musiclyrics:
+    build: .
+    container_name: musiclyrics-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
