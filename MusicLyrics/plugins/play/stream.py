@@ -50,11 +50,8 @@ async def stream_audio(
             video_flags=MediaStream.Flags.IGNORE,
         )
 
-        if chat_id in _active_chats:
-            await pytgcalls.change_stream(chat_id, audio)
-        else:
-            await pytgcalls.join_group_call(chat_id, audio)
-            _active_chats.add(chat_id)
+        await pytgcalls.play(chat_id, audio)
+        _active_chats.add(chat_id)
 
         LOG.info("Streaming audio in %s: %s", chat_id, title)
     except Exception:
@@ -71,6 +68,8 @@ async def stream_video(
     requester: str = "",
 ) -> None:
     """Join voice chat (if needed) and start video stream."""
+    if pytgcalls is None:
+        raise RuntimeError("Music streaming is disabled — STRING_SESSION not configured.")
     try:
         stream = MediaStream(
             file_path,
@@ -78,11 +77,8 @@ async def stream_video(
             video_parameters=VideoQuality.SD_480p,
         )
 
-        if chat_id in _active_chats:
-            await pytgcalls.change_stream(chat_id, stream)
-        else:
-            await pytgcalls.join_group_call(chat_id, stream)
-            _active_chats.add(chat_id)
+        await pytgcalls.play(chat_id, stream)
+        _active_chats.add(chat_id)
 
         LOG.info("Streaming video in %s: %s", chat_id, title)
     except Exception:
@@ -97,6 +93,8 @@ async def stream_audio_with_image(
     title: str = "",
 ) -> None:
     """Stream audio with a static thumbnail image in video chat."""
+    if pytgcalls is None:
+        raise RuntimeError("Music streaming is disabled — STRING_SESSION not configured.")
     try:
         stream = MediaStream(
             file_path,
@@ -104,11 +102,8 @@ async def stream_audio_with_image(
             video_flags=MediaStream.Flags.IGNORE,
         )
 
-        if chat_id in _active_chats:
-            await pytgcalls.change_stream(chat_id, stream)
-        else:
-            await pytgcalls.join_group_call(chat_id, stream)
-            _active_chats.add(chat_id)
+        await pytgcalls.play(chat_id, stream)
+        _active_chats.add(chat_id)
 
         LOG.info("Streaming audio+image in %s: %s", chat_id, title)
     except Exception:
@@ -118,7 +113,7 @@ async def stream_audio_with_image(
 
 async def pause_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.pause_stream(chat_id)
+        await pytgcalls.pause(chat_id)
         return True
     except Exception:
         LOG.exception("Pause failed: %s", chat_id)
@@ -127,7 +122,7 @@ async def pause_stream(chat_id: int) -> bool:
 
 async def resume_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.resume_stream(chat_id)
+        await pytgcalls.resume(chat_id)
         return True
     except Exception:
         LOG.exception("Resume failed: %s", chat_id)
@@ -135,13 +130,8 @@ async def resume_stream(chat_id: int) -> bool:
 
 
 async def seek_stream(chat_id: int, seconds: int) -> bool:
-    """Seek is not natively supported by all py-tgcalls versions.
-
-    This is a best-effort implementation.
-    """
+    """Seek is not natively supported by all py-tgcalls versions."""
     try:
-        # py-tgcalls >=1.x may support seek via change_stream with ffmpeg
-        # offset — for now we log a warning.
         LOG.warning("Seek requested but not natively supported in this version.")
         return False
     except Exception:
@@ -163,7 +153,7 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
     try:
-        await pytgcalls.leave_group_call(chat_id)
+        await pytgcalls.leave_call(chat_id)
     except Exception:
         LOG.exception("Leave VC failed: %s", chat_id)
     _active_chats.discard(chat_id)
@@ -178,12 +168,6 @@ def is_active(chat_id: int) -> bool:
 
 async def _on_stream_end(client, update):
     """When current track ends, play next in queue or leave."""
-    from pytgcalls.types import Update
-    if not isinstance(update, Update):
-        return
-    # py-tgcalls 1.x: check if the stream ended
-    if not hasattr(update, "stopped_status"):
-        return
     chat_id = update.chat_id
 
     next_item = await skip_queue(chat_id)
@@ -229,4 +213,5 @@ async def _on_stream_end(client, update):
 
 # Register the callback only if pytgcalls is available
 if pytgcalls is not None:
-    pytgcalls.on_update()(_on_stream_end)
+    from pytgcalls import filters as _ptg_filters
+    pytgcalls.on_update(_ptg_filters.stream_end)(_on_stream_end)

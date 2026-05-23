@@ -108,7 +108,12 @@ async def main():
     # Graceful shutdown
     LOG.info("Shutting down MusicLyrics...")
     if Config.STRING_SESSION and pytgcalls:
-        await pytgcalls.stop()
+        # py-tgcalls 2.x has no stop(); leave all active calls instead
+        for chat_id in list(pytgcalls.calls):
+            try:
+                await pytgcalls.leave_call(chat_id)
+            except Exception:
+                pass
     if Config.STRING_SESSION and userbot:
         await userbot.stop()
     await bot.stop()
