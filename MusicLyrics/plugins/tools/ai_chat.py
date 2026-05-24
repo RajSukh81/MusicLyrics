@@ -34,9 +34,10 @@ _recent_replies: dict[int, deque] = {}
 # ── API rate limit tracking ───────────────────────────────────────────────────
 # Per-model cooldown: different models have different quotas
 _model_cooldown_until: dict[str, float] = {}  # model -> timestamp
-_API_COOLDOWN_SECONDS = 300  # wait 5 minutes after a 429 before retrying
-_API_COOLDOWN_BACKOFF = 2.0  # multiply cooldown on repeated 429s
+_API_COOLDOWN_SECONDS = 60   # wait 60s after a 429 before retrying
+_API_COOLDOWN_BACKOFF = 1.5  # multiply cooldown on repeated 429s
 _model_cooldown_multiplier: dict[str, float] = {}  # model -> current multiplier
+_MAX_COOLDOWN_MULTIPLIER = 4.0  # max 60*4 = 240s cooldown
 
 
 def _get_history(chat_id: int) -> deque:
@@ -257,13 +258,18 @@ async def _try_gemini(
                             if reply:
                                 history.append(("user", text))
                                 history.append(("model", reply))
+                                # Reset cooldown multiplier on success
+                                _model_cooldown_multiplier[model] = 1.0
                                 return reply
                 elif resp.status == 429:
                     # Quota exceeded — set per-model cooldown with backoff
                     multiplier = _model_cooldown_multiplier.get(model, 1.0)
                     cooldown = _API_COOLDOWN_SECONDS * multiplier
                     _model_cooldown_until[model] = time.time() + cooldown
-                    _model_cooldown_multiplier[model] = min(multiplier * _API_COOLDOWN_BACKOFF, 16.0)
+                    _model_cooldown_multiplier[model] = min(
+                        multiplier * _API_COOLDOWN_BACKOFF,
+                        _MAX_COOLDOWN_MULTIPLIER,
+                    )
                     LOG.warning(
                         "Gemini %s quota exceeded (429). Cooldown %.0fs.",
                         model, cooldown,
