@@ -145,14 +145,18 @@ async def kang_sticker(client, message: Message):
         pack_title = f"{user.first_name}'s MusicLyrics Pack"
 
         try:
-            # Try adding to existing pack
+            # Try adding to existing pack using raw API
+            from pyrogram.raw.functions.stickers import AddStickerToSet
+            from pyrogram.raw.types import (
+                InputStickerSetShortName,
+                InputStickerSetItem,
+            )
+            saved_file = await client.save_file(webp_path)
             await client.invoke(
-                __import__("pyrogram.raw.functions.stickers", fromlist=["AddStickerToSet"]).AddStickerToSet(
-                    stickerset=__import__("pyrogram.raw.types", fromlist=["InputStickerSetShortName"]).InputStickerSetShortName(
-                        short_name=pack_name
-                    ),
-                    sticker=__import__("pyrogram.raw.types", fromlist=["InputStickerSetItem"]).InputStickerSetItem(
-                        document=await client.save_file(webp_path),
+                AddStickerToSet(
+                    stickerset=InputStickerSetShortName(short_name=pack_name),
+                    sticker=InputStickerSetItem(
+                        document=saved_file,
                         emoji=sticker_emoji,
                     ),
                 )
