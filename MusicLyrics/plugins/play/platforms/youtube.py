@@ -1,9 +1,8 @@
-"""YouTube search and download helpers using yt-dlp only."""
+"""YouTube search and download helpers using yt-dlp Python API."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -20,76 +19,110 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # ── Search ───────────────────────────────────────────────────────────────────
 
 async def search_youtube(query: str, max_results: int = 1) -> Optional[dict]:
-    """Search YouTube using yt-dlp and return the first result dict.
+    """Search YouTube using yt-dlp Python API and return the first result.
 
     Keys: title, url, duration (seconds), thumbnail, channel.
     Returns ``None`` when nothing is found.
     """
+    loop = asyncio.get_running_loop()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--dump-json", "--default-search", f"ytsearch{max_results}",
-            "--no-playlist", "--no-download",
-            "--geo-bypass", "--no-check-certificates",
-            "--socket-timeout", "15",
-            query,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode != 0 or not stdout:
-            LOG.warning("yt-dlp search failed: %s", stderr.decode()[:200] if stderr else "no output")
-            return None
-
-        info = json.loads(stdout.decode().split("\n")[0])
-        return {
-            "title": info.get("title", "Unknown"),
-            "url": info.get("webpage_url", ""),
-            "duration": int(info.get("duration", 0)),
-            "thumbnail": info.get("thumbnail", ""),
-            "channel": info.get("uploader", info.get("channel", "Unknown")),
-        }
-    except asyncio.TimeoutError:
-        LOG.error("YouTube search timed out for: %s", query)
-        return None
+        result = await loop.run_in_executor(None, _search_sync, query, max_results)
+        return result
     except Exception:
         LOG.exception("YouTube search failed for query: %s", query)
         return None
 
 
+def _search_sync(query: str, max_results: int = 1) -> Optional[dict]:
+    """Synchronous YouTube search using yt-dlp."""
+    import yt_dlp
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "extract_flat": False,
+        "default_search": f"ytsearch{max_results}",
+        "socket_timeout": 15,
+        "retries": 2,
+        "noplaylist": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if not info:
+                return None
+
+            # If it's a search result, entries will be in 'entries'
+            entries = info.get("entries")
+            if entries:
+                item = entries[0] if entries else None
+            else:
+                item = info  # Direct URL
+
+            if not item:
+                return None
+
+            return {
+                "title": item.get("title", "Unknown"),
+                "url": item.get("webpage_url", item.get("url", "")),
+                "duration": int(item.get("duration") or 0),
+                "thumbnail": item.get("thumbnail", ""),
+                "channel": item.get("uploader", item.get("channel", "Unknown")),
+            }
+    except Exception:
+        LOG.exception("yt-dlp search_sync failed for: %s", query)
+        return None
+
+
 async def search_youtube_many(query: str, limit: int = 5) -> list[dict]:
     """Return up to *limit* results."""
+    loop = asyncio.get_running_loop()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--dump-json", "--default-search", f"ytsearch{limit}",
-            "--no-playlist", "--no-download",
-            "--geo-bypass", "--no-check-certificates",
-            "--socket-timeout", "15",
-            query,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
-        if proc.returncode != 0 or not stdout:
-            return []
-
-        out: list[dict] = []
-        for line in stdout.decode().strip().split("\n"):
-            if not line.strip():
-                continue
-            try:
-                info = json.loads(line)
-                out.append({
-                    "title": info.get("title", "Unknown"),
-                    "url": info.get("webpage_url", ""),
-                    "duration": int(info.get("duration", 0)),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "channel": info.get("uploader", info.get("channel", "Unknown")),
-                })
-            except json.JSONDecodeError:
-                continue
-        return out
+        return await loop.run_in_executor(None, _search_many_sync, query, limit)
     except Exception:
         LOG.exception("YouTube multi-search failed: %s", query)
+        return []
+
+
+def _search_many_sync(query: str, limit: int = 5) -> list[dict]:
+    """Synchronous multi-result search."""
+    import yt_dlp
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "extract_flat": True,
+        "default_search": f"ytsearch{limit}",
+        "socket_timeout": 15,
+        "noplaylist": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if not info:
+                return []
+
+            entries = info.get("entries", [])
+            out: list[dict] = []
+            for item in entries:
+                if not item:
+                    continue
+                out.append({
+                    "title": item.get("title", "Unknown"),
+                    "url": item.get("webpage_url", item.get("url", "")),
+                    "duration": int(item.get("duration") or 0),
+                    "thumbnail": item.get("thumbnail", ""),
+                    "channel": item.get("uploader", item.get("channel", "Unknown")),
+                })
+            return out
+    except Exception:
+        LOG.exception("yt-dlp search_many_sync failed: %s", query)
         return []
 
 
@@ -138,7 +171,13 @@ async def get_video_info(url: str) -> Optional[dict]:
     try:
         import yt_dlp
 
-        opts = {"quiet": True, "no_warnings": True, "geo_bypass": True}
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "geo_bypass": True,
+            "nocheckcertificate": True,
+            "socket_timeout": 15,
+        }
         loop = asyncio.get_running_loop()
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = await loop.run_in_executor(
@@ -149,7 +188,7 @@ async def get_video_info(url: str) -> Optional[dict]:
         return {
             "title": info.get("title", "Unknown"),
             "url": info.get("webpage_url", url),
-            "duration": int(info.get("duration", 0)),
+            "duration": int(info.get("duration") or 0),
             "thumbnail": info.get("thumbnail", ""),
             "channel": info.get("uploader", "Unknown"),
         }
@@ -162,6 +201,7 @@ async def get_video_info(url: str) -> Optional[dict]:
 
 async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     import yt_dlp
+    import glob
 
     loop = asyncio.get_running_loop()
     try:
@@ -171,7 +211,16 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
             )
             if not info:
                 return None
-            return ydl.prepare_filename(info)
+            path = ydl.prepare_filename(info)
+            # yt-dlp may change extension after post-processing
+            if os.path.exists(path):
+                return path
+            # Try without extension
+            base = os.path.splitext(path)[0]
+            matches = glob.glob(f"{base}.*")
+            if matches:
+                return matches[0]
+            return path
     except Exception:
         LOG.exception("yt-dlp download failed: %s", url)
         return None

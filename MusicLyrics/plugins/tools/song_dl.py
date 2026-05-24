@@ -1,6 +1,5 @@
 """Song/video download plugin for MusicLyrics bot."""
 
-import json
 import os
 import asyncio
 import re
@@ -19,19 +18,32 @@ LOG = logging.getLogger(__name__)
 async def _yt_search(query: str) -> dict | None:
     """Search YouTube and return first result info dict."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--dump-json", "--default-search", "ytsearch1",
-            "--no-playlist", "-f", "bestaudio/best",
-            "--geo-bypass", "--no-check-certificates",
-            query,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-        if proc.returncode != 0 or not stdout:
-            LOG.warning("yt-dlp search failed: %s", stderr.decode()[:200] if stderr else "no output")
+        import yt_dlp
+
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "geo_bypass": True,
+            "nocheckcertificate": True,
+            "default_search": "ytsearch1",
+            "noplaylist": True,
+            "socket_timeout": 15,
+        }
+        loop = asyncio.get_running_loop()
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: ydl.extract_info(query, download=False)
+                ),
+                timeout=60,
+            )
+        if not info:
             return None
-        return json.loads(stdout)
+        # If search result, get first entry
+        entries = info.get("entries")
+        if entries:
+            return entries[0] if entries else None
+        return info
     except asyncio.TimeoutError:
         LOG.error("yt-dlp search timed out for: %s", query)
         return None
@@ -48,49 +60,69 @@ async def _download(query: str, audio_only: bool = True) -> tuple[str | None, di
 
     url = info.get("webpage_url") or info.get("url", query)
     title = info.get("title", "Unknown")
-    # Sanitize filename — remove path separators and special chars
+    # Sanitize filename
     safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title)[:50]
-    duration = info.get("duration", 0)
 
     dl_dir = Config.DOWNLOADS_DIR
     os.makedirs(dl_dir, exist_ok=True)
 
     if audio_only:
-        out_path = os.path.join(dl_dir, f"{safe_title}.mp3")
-        cmd = [
-            "yt-dlp", "-x", "--audio-format", "mp3",
-            "--audio-quality", "128K",
-            "--geo-bypass", "--no-check-certificates",
-            "-o", out_path, "--no-playlist", url,
-        ]
+        out_path = os.path.join(dl_dir, f"{safe_title}.%(ext)s")
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": out_path,
+            "quiet": True,
+            "no_warnings": True,
+            "geo_bypass": True,
+            "nocheckcertificate": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+            "retries": 3,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "128",
+                }
+            ],
+        }
     else:
-        out_path = os.path.join(dl_dir, f"{safe_title}.mp4")
-        cmd = [
-            "yt-dlp", "-f", "best[ext=mp4][height<=720]/best[height<=720]/best",
-            "--geo-bypass", "--no-check-certificates",
-            "-o", out_path, "--no-playlist", url,
-        ]
+        out_path = os.path.join(dl_dir, f"{safe_title}.%(ext)s")
+        opts = {
+            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
+            "outtmpl": out_path,
+            "quiet": True,
+            "no_warnings": True,
+            "geo_bypass": True,
+            "nocheckcertificate": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+            "retries": 3,
+            "merge_output_format": "mp4",
+        }
 
+    import yt_dlp
+    import glob
+
+    loop = asyncio.get_running_loop()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        if proc.returncode != 0:
-            LOG.warning("yt-dlp download failed: %s", stderr.decode()[:200] if stderr else "unknown")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                ),
+                timeout=120,
+            )
     except asyncio.TimeoutError:
         LOG.error("yt-dlp download timed out for: %s", url)
         return None, info
+    except Exception:
+        LOG.exception("yt-dlp download failed for: %s", url)
+        return None, info
 
-    if os.path.exists(out_path):
-        return out_path, info
-
-    # yt-dlp may append extension — try glob
-    import glob
-    pattern = os.path.join(dl_dir, f"{safe_title}.*")
-    matches = glob.glob(pattern)
+    # Find the downloaded file
+    base_pattern = os.path.join(dl_dir, f"{safe_title}.*")
+    matches = glob.glob(base_pattern)
     if matches:
         return matches[0], info
 

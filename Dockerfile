@@ -4,6 +4,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     curl \
+    nodejs \
+    npm \
     fonts-dejavu-core \
     fonts-liberation \
     fonts-freefont-ttf \
