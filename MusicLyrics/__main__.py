@@ -251,7 +251,7 @@ def _setup_catchall_handler():
 
     @bot.on_message(~filters.me & ~filters.service & filters.private, group=100)
     async def _catchall_private(client, message: Message):
-        """Respond to unrecognized private messages."""
+        """Respond to unrecognized private messages with unknown command notice."""
         if message.text and message.text.startswith("/"):
             cmd = message.text.split()[0]
             await message.reply_text(
@@ -259,23 +259,7 @@ def _setup_catchall_handler():
                 f"কমান্ড তালিকা দেখতে /help দিন।\n"
                 f"Use /help to see all available commands."
             )
-        # For non-command messages in private, optionally respond
-        # (don't spam in groups)
-
-    @bot.on_message(filters.group & filters.mentioned, group=101)
-    async def _on_mentioned_in_group(client, message: Message):
-        """Respond when bot is mentioned/tagged in a group."""
-        try:
-            me = await client.get_me()
-            text = message.text or message.caption or ""
-            if f"@{me.username}" in text:
-                await message.reply_text(
-                    f"**হ্যাঁ, আমি এখানে আছি!** 🎵\n\n"
-                    f"কমান্ড দেখতে /help দিন।\n"
-                    f"Use /help for all commands."
-                )
-        except Exception:
-            pass
+        # Non-command private messages are handled by the AI chat plugin
 
     LOG.info("Catch-all and mention handlers registered.")
 
@@ -362,15 +346,15 @@ async def main():
     # Pyrogram re-set it during handshake -- but do NOT drop pending
     # updates this time, as that would discard updates Pyrogram is
     # already polling for and can desync the getUpdates offset.
-    url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
+    _wh_url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url, json={"drop_pending_updates": False},
+                _wh_url, json={"drop_pending_updates": False},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                result = await resp.json()
-                LOG.info("Post-start webhook delete: %s", result)
+                _wh_resp = await resp.json()
+                LOG.info("Post-start webhook delete: %s", _wh_resp)
     except Exception as e:
         LOG.warning("Post-start webhook delete failed: %s", e)
 
