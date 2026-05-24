@@ -222,6 +222,231 @@ def _invidious_video_info(data: dict, video_id: str) -> dict:
         "video_id": video_id,
     }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# INNERTUBE PLAYER API — Direct YouTube stream extraction (no yt-dlp needed)
+# Mobile clients return direct stream URLs without signature cipher.
+# This is the same method NewPipe and Piped use internally.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_INNERTUBE_PLAYER_URL = "https://www.youtube.com/youtubei/v1/player"
+
+# Mobile/TV clients that return direct (non-cipher) stream URLs
+_PLAYER_CLIENTS = [
+    {
+        "name": "ANDROID_MUSIC",
+        "context": {
+            "client": {
+                "clientName": "ANDROID_MUSIC",
+                "clientVersion": "7.27.52",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "11",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
+        "ua": "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip",
+    },
+    {
+        "name": "ANDROID",
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.44.38",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "11",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "ua": "com.google.android.youtube/19.44.38 (Linux; U; Android 11) gzip",
+    },
+    {
+        "name": "IOS",
+        "context": {
+            "client": {
+                "clientName": "IOS",
+                "clientVersion": "19.29.1",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "hl": "en",
+                "gl": "US",
+                "osName": "iOS",
+                "osVersion": "17.5.1",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
+        "ua": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)",
+    },
+    {
+        "name": "TV_EMBEDDED",
+        "context": {
+            "client": {
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+                "hl": "en",
+                "gl": "US",
+                "platform": "TV",
+            }
+        },
+        "key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        "ua": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.5)",
+        "embed": True,
+    },
+]
+
+
+async def _innertube_player(video_id: str) -> Optional[dict]:
+    """Get player response from YouTube Innertube Player API directly.
+
+    Tries multiple client contexts. Mobile clients (ANDROID, IOS) typically
+    return direct stream URLs without signature cipher — no yt-dlp needed.
+    """
+    for client in _PLAYER_CLIENTS:
+        try:
+            payload = {
+                "context": client["context"],
+                "videoId": video_id,
+                "playbackContext": {
+                    "contentPlaybackContext": {
+                        "html5Preference": "HTML5_PREF_WANTS",
+                    }
+                },
+                "contentCheckOk": True,
+                "racyCheckOk": True,
+            }
+            # TV_EMBEDDED needs thirdParty.embedUrl
+            if client.get("embed"):
+                payload["thirdParty"] = {"embedUrl": "https://www.google.com"}
+
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": client["ua"],
+                "Origin": "https://www.youtube.com",
+                "Referer": "https://www.youtube.com/",
+            }
+            api_url = f"{_INNERTUBE_PLAYER_URL}?key={client['key']}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    api_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        LOG.debug("Innertube player %s HTTP %d for %s",
+                                 client["name"], resp.status, video_id)
+                        continue
+                    data = await resp.json()
+
+                    # Check playability
+                    ps = data.get("playabilityStatus", {})
+                    if ps.get("status") != "OK":
+                        LOG.debug("Innertube %s: status=%s for %s (reason: %s)",
+                                 client["name"], ps.get("status"), video_id,
+                                 ps.get("reason", "unknown"))
+                        continue
+
+                    # Check for stream URLs
+                    sd = data.get("streamingData", {})
+                    all_fmts = sd.get("adaptiveFormats", []) + sd.get("formats", [])
+
+                    # Only use formats with direct URL (no signatureCipher)
+                    direct = [f for f in all_fmts
+                              if f.get("url") and not f.get("signatureCipher")]
+                    if direct:
+                        LOG.info("Innertube player: %d direct formats via %s for %s",
+                                len(direct), client["name"], video_id)
+                        return data
+                    else:
+                        LOG.debug("Innertube %s: %d formats but all cipher for %s",
+                                 client["name"], len(all_fmts), video_id)
+
+        except Exception as e:
+            LOG.debug("Innertube player %s error for %s: %s",
+                     client["name"], video_id, e)
+            continue
+    return None
+
+
+def _best_innertube_audio(data: dict) -> Optional[str]:
+    """Extract best direct audio URL from Innertube player response."""
+    sd = data.get("streamingData", {})
+
+    # Adaptive audio-only formats
+    adaptive = sd.get("adaptiveFormats", [])
+    audio = [f for f in adaptive
+             if f.get("url") and not f.get("signatureCipher")
+             and f.get("mimeType", "").startswith("audio/")]
+    if audio:
+        # Prefer opus/webm
+        opus = [f for f in audio if "opus" in f.get("mimeType", "")]
+        pool = opus if opus else audio
+        best = max(pool, key=lambda f: int(f.get("bitrate", 0)))
+        return best.get("url")
+
+    # Fallback: combined formats (audio+video)
+    combined = sd.get("formats", [])
+    direct = [f for f in combined
+              if f.get("url") and not f.get("signatureCipher")]
+    if direct:
+        return direct[0].get("url")
+
+    return None
+
+
+def _best_innertube_video(data: dict) -> Optional[str]:
+    """Extract best direct video URL from Innertube player response."""
+    sd = data.get("streamingData", {})
+
+    # Combined formats first (has audio+video — best for VC streaming)
+    combined = sd.get("formats", [])
+    direct = [f for f in combined
+              if f.get("url") and not f.get("signatureCipher")]
+    if direct:
+        candidates = [f for f in direct if (f.get("height", 0) or 0) <= 720]
+        if not candidates:
+            candidates = direct
+        best = max(candidates, key=lambda f: f.get("height", 0) or 0)
+        return best.get("url")
+
+    # Adaptive video-only
+    adaptive = sd.get("adaptiveFormats", [])
+    video = [f for f in adaptive
+             if f.get("url") and not f.get("signatureCipher")
+             and f.get("mimeType", "").startswith("video/")]
+    if video:
+        candidates = [f for f in video if (f.get("height", 0) or 0) <= 720]
+        if not candidates:
+            candidates = video
+        best = max(candidates, key=lambda f: f.get("height", 0) or 0)
+        return best.get("url")
+
+    # Last resort: audio
+    return _best_innertube_audio(data)
+
+
+def _innertube_video_info(data: dict, video_id: str) -> dict:
+    """Extract video info from Innertube player response."""
+    vd = data.get("videoDetails", {})
+    thumbs = vd.get("thumbnail", {}).get("thumbnails", [])
+    thumbnail = thumbs[-1].get("url", "") if thumbs else ""
+    return {
+        "title": vd.get("title", "Unknown"),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "duration": int(vd.get("lengthSeconds", 0)),
+        "thumbnail": thumbnail,
+        "channel": vd.get("author", "Unknown"),
+        "video_id": video_id,
+    }
+
 # ── Cookie support ────────────────────────────────────────────────────────────
 _COOKIES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "..", "..", "cookies")
@@ -531,12 +756,23 @@ def _ytdlp_search_sync(query: str, max_results: int = 1) -> Optional[dict]:
 async def get_audio_stream_url(url: str) -> Optional[str]:
     """Extract direct audio stream URL (no download).
 
-    Priority: Piped API -> Invidious API -> yt-dlp (fallback).
+    Priority: Innertube Player API -> Piped -> Invidious -> yt-dlp.
     """
     video_id = _extract_video_id(url)
 
-    # Try Piped first (works on cloud IPs without cookies)
     if video_id:
+        # Try 1: Innertube Player API (direct, no yt-dlp, works on cloud IPs)
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_audio(data)
+                if stream_url:
+                    LOG.info("Audio stream via Innertube for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Innertube audio failed for %s", video_id)
+
+        # Try 2: Piped proxy
         try:
             data = await _piped_get_streams(video_id)
             if data:
@@ -547,7 +783,7 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Piped audio failed for %s", video_id)
 
-        # Try Invidious
+        # Try 3: Invidious proxy
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -558,8 +794,8 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious audio failed for %s", video_id)
 
-    # Fallback: yt-dlp
-    LOG.info("Proxy APIs failed, trying yt-dlp for audio: %s", url)
+    # Try 4: yt-dlp (last resort)
+    LOG.info("All direct APIs failed, trying yt-dlp for audio: %s", url)
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
@@ -573,12 +809,23 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
 async def get_video_stream_url(url: str) -> Optional[str]:
     """Extract direct video stream URL (no download).
 
-    Priority: Piped API -> Invidious API -> yt-dlp (fallback).
+    Priority: Innertube Player API -> Piped -> Invidious -> yt-dlp.
     """
     video_id = _extract_video_id(url)
 
-    # Try Piped first
     if video_id:
+        # Try 1: Innertube Player API
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_video(data)
+                if stream_url:
+                    LOG.info("Video stream via Innertube for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Innertube video failed for %s", video_id)
+
+        # Try 2: Piped proxy
         try:
             data = await _piped_get_streams(video_id)
             if data:
@@ -589,7 +836,7 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Piped video failed for %s", video_id)
 
-        # Try Invidious
+        # Try 3: Invidious proxy
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -600,8 +847,8 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious video failed for %s", video_id)
 
-    # Fallback: yt-dlp
-    LOG.info("Proxy APIs failed, trying yt-dlp for video: %s", url)
+    # Try 4: yt-dlp (last resort)
+    LOG.info("All direct APIs failed, trying yt-dlp for video: %s", url)
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
@@ -613,10 +860,18 @@ async def get_video_stream_url(url: str) -> Optional[str]:
 
 
 async def get_video_info(url: str) -> Optional[dict]:
-    """Get video metadata. Tries Piped/Invidious first, yt-dlp fallback."""
+    """Get video metadata. Tries Innertube/Piped/Invidious first, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
     if video_id:
+        # Try Innertube Player API
+        try:
+            data = await _innertube_player(video_id)
+            if data and data.get("videoDetails", {}).get("title"):
+                return _innertube_video_info(data, video_id)
+        except Exception:
+            LOG.debug("Innertube info failed for %s", video_id)
+
         # Try Piped
         try:
             data = await _piped_get_streams(video_id)
@@ -707,28 +962,85 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD — Piped stream URL + aiohttp download, yt-dlp fallback
+# DOWNLOAD — Innertube/Piped stream download, yt-dlp fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+async def _piped_or_invidious_audio(video_id: str) -> Optional[str]:
+    """Try Piped then Invidious for audio stream URL."""
+    try:
+        data = await _piped_get_streams(video_id)
+        if data:
+            url = _best_piped_audio_url(data)
+            if url:
+                return url
+    except Exception:
+        pass
+    try:
+        data = await _invidious_get_streams(video_id)
+        if data:
+            url = _best_invidious_audio_url(data)
+            if url:
+                return url
+    except Exception:
+        pass
+    return None
+
+
+async def _piped_or_invidious_video(video_id: str) -> Optional[str]:
+    """Try Piped then Invidious for video stream URL."""
+    try:
+        data = await _piped_get_streams(video_id)
+        if data:
+            url = _best_piped_video_url(data)
+            if url:
+                return url
+    except Exception:
+        pass
+    try:
+        data = await _invidious_get_streams(video_id)
+        if data:
+            url = _best_invidious_video_url(data)
+            if url:
+                return url
+    except Exception:
+        pass
+    return None
+
+
 async def download_audio(url: str) -> Optional[str]:
-    """Download audio. Tries Piped stream URL first, yt-dlp fallback."""
+    """Download audio. Tries Innertube/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
-    # Try Piped/Invidious stream URL + direct download
     if video_id:
-        stream_url = await get_audio_stream_url(url)
-        if stream_url:
-            try:
+        # Try 1: Innertube Player API -> download stream
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_audio(data)
+                if stream_url:
+                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube.m4a")
+                    downloaded = await _download_stream(stream_url, filepath)
+                    if downloaded:
+                        LOG.info("Audio downloaded via Innertube for %s", video_id)
+                        return downloaded
+        except Exception:
+            LOG.debug("Innertube audio download failed for %s", video_id)
+
+        # Try 2: Piped/Invidious stream URL + download
+        try:
+            stream_url = await _piped_or_invidious_audio(video_id)
+            if stream_url:
                 filepath = os.path.join(_DOWNLOADS, f"{video_id}.opus")
                 downloaded = await _download_stream(stream_url, filepath)
                 if downloaded:
                     LOG.info("Audio downloaded via proxy for %s", video_id)
                     return downloaded
-            except Exception:
-                LOG.debug("Proxy download failed for %s", video_id)
+        except Exception:
+            LOG.debug("Proxy audio download failed for %s", video_id)
 
-    # Fallback: yt-dlp
-    LOG.info("Proxy download failed, trying yt-dlp for audio: %s", url)
+    # Try 3: yt-dlp (last resort)
+    LOG.info("Direct download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
         "format": "ba/b",
@@ -739,24 +1051,38 @@ async def download_audio(url: str) -> Optional[str]:
 
 
 async def download_video(url: str) -> Optional[str]:
-    """Download video. Tries Piped stream URL first, yt-dlp fallback."""
+    """Download video. Tries Innertube/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
-    # Try Piped/Invidious stream URL + direct download
     if video_id:
-        stream_url = await get_video_stream_url(url)
-        if stream_url:
-            try:
+        # Try 1: Innertube Player API -> download stream
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_video(data)
+                if stream_url:
+                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube_video.mp4")
+                    downloaded = await _download_stream(stream_url, filepath)
+                    if downloaded:
+                        LOG.info("Video downloaded via Innertube for %s", video_id)
+                        return downloaded
+        except Exception:
+            LOG.debug("Innertube video download failed for %s", video_id)
+
+        # Try 2: Piped/Invidious stream URL + download
+        try:
+            stream_url = await _piped_or_invidious_video(video_id)
+            if stream_url:
                 filepath = os.path.join(_DOWNLOADS, f"{video_id}_video.mp4")
                 downloaded = await _download_stream(stream_url, filepath)
                 if downloaded:
                     LOG.info("Video downloaded via proxy for %s", video_id)
                     return downloaded
-            except Exception:
-                LOG.debug("Proxy video download failed for %s", video_id)
+        except Exception:
+            LOG.debug("Proxy video download failed for %s", video_id)
 
-    # Fallback: yt-dlp
-    LOG.info("Proxy download failed, trying yt-dlp for video: %s", url)
+    # Try 3: yt-dlp (last resort)
+    LOG.info("Direct download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
         "format": "bv*[height<=720]+ba/b[height<=720]/b",
@@ -826,18 +1152,19 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     last_err = None
     for combo in _CLIENT_COMBOS:
         run_opts = {**opts}
-        run_opts["extractor_args"] = {
-            "youtube": {
-                "player_client": combo,
-            },
-        }
+        # Build extractor_args preserving PO token and visitor data
+        yt_args = {"player_client": combo}
+        po_token = os.environ.get("YT_PO_TOKEN", "").strip()
+        if po_token:
+            yt_args["po_token"] = [po_token]
+        visitor_data = os.environ.get("YT_VISITOR_DATA", "").strip()
+        if visitor_data:
+            yt_args["visitor_data"] = [visitor_data]
+        run_opts["extractor_args"] = {"youtube": yt_args}
         # Preserve cookies
         cookie = _get_cookie()
         if cookie:
             run_opts["cookiefile"] = cookie
-        po_token = os.environ.get("YT_PO_TOKEN", "").strip()
-        if po_token:
-            run_opts["extractor_args"]["youtube"]["po_token"] = [po_token]
 
         try:
             with yt_dlp.YoutubeDL(run_opts) as ydl:
