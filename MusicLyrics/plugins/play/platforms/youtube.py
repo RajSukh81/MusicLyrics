@@ -679,9 +679,9 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     import yt_dlp
 
     if audio_only:
-        fmt = "bestaudio[ext=webm][acodec=opus]/bestaudio/best"
+        fmt = "bestaudio/best"
     else:
-        fmt = "best[height<=?720][width<=?1280][ext=mp4]/best[height<=?720]/best"
+        fmt = "best[height<=?720]/best"
 
     last_err = None
     for combo in _CLIENT_COMBOS:
@@ -728,7 +728,7 @@ async def download_audio(url: str) -> Optional[str]:
     LOG.info("Proxy download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
+        "format": "bestaudio/best",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
         "overwrites": False,
         "postprocessors": [{
@@ -761,7 +761,7 @@ async def download_video(url: str) -> Optional[str]:
     LOG.info("Proxy download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio[ext=m4a])/best[height<=?720]/best",
+        "format": "bestvideo[height<=?720]+bestaudio/best[height<=?720]/best",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "merge_output_format": "mp4",
         "overwrites": False,
