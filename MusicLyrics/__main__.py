@@ -105,15 +105,6 @@ async def _start_with_retry(client, name, max_retries=5):
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
 
-    # CRITICAL: Fix event loop mismatch.
-    # Client() created at import time holds a reference to a stale loop.
-    # Reassign the dispatcher's loop to the currently running one so that
-    # add_handler() and dispatcher.start() schedule tasks on the correct loop.
-    running_loop = asyncio.get_running_loop()
-    bot.dispatcher.loop = running_loop
-    if userbot:
-        userbot.dispatcher.loop = running_loop
-
     _load_plugins()
 
     # Verify handlers were registered
@@ -157,4 +148,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Use get_event_loop().run_until_complete() instead of asyncio.run()
+    # because asyncio.run() creates a NEW event loop, but pyrofork's Client
+    # and Dispatcher (created at import time in bot.py) hold a reference to
+    # the loop from asyncio.get_event_loop(). Using the same loop ensures
+    # add_handler(), dispatcher.start(), and handler workers all operate
+    # on the correct loop. This matches pyrofork's own Client.run() behavior.
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
