@@ -111,6 +111,11 @@
       "required": false,
       "value": ""
     },
+    "COBALT_API_KEY": {
+      "description": "Cobalt API key for cloud-friendly YouTube stream extraction (optional). Get from https://cobalt.tools/",
+      "required": false,
+      "value": ""
+    },
     "YOUTUBE_PROXY": {
       "description": "Single YouTube proxy URL. Format: http://user:pass@host:port — REQUIRED for cloud platforms (Heroku/Railway/Render) where YouTube blocks server IPs.",
       "required": false,

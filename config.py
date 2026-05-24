@@ -72,6 +72,7 @@ class Config:
     SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
     YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
     AI_API_KEY = os.environ.get("AI_API_KEY")
+    COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "")
 
     # ── Proxy for YouTube (essential for cloud deployments like Heroku) ──
     # Single proxy: "http://user:pass@host:port" or "socks5://host:port"

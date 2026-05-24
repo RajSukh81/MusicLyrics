@@ -37,10 +37,11 @@ _PIPED_INSTANCES = [
     "https://pipedapi.adminforge.de",
     "https://pipedapi.r4fo.com",
     "https://pipedapi.leptons.xyz",
-    "https://pipedapi.moomoo.me",
-    "https://pipedapi.syncpundit.io",
     "https://api.piped.yt",
     "https://pipedapi.ngn.tf",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://pipedapi.darkness.services",
+    "https://pipedapi.drgns.space",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -51,20 +52,23 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
     "https://invidious.perennialte.ch",
-    "https://invidious.privacyredirect.com",
     "https://iv.datura.network",
+    "https://invidious.lunar.icu",
+    "https://yt.drgnz.club",
 ]
 
-# Cobalt API — reliable cloud-friendly YouTube proxy (no auth needed)
+# Cobalt API — reliable cloud-friendly YouTube proxy
+# Requires API key since late 2024 — set COBALT_API_KEY env var
 _COBALT_INSTANCES = [
     "https://api.cobalt.tools",
 ]
+_COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
 
 _PROXY_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Chrome/136.0.0.0 Safari/537.36"
     ),
 }
 
@@ -219,7 +223,14 @@ def _best_invidious_audio_url(data: dict) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional[str]:
-    """Get stream URL via Cobalt API. Works reliably on cloud servers."""
+    """Get stream URL via Cobalt API. Works reliably on cloud servers.
+
+    Requires COBALT_API_KEY env var since Cobalt v10+ (late 2024).
+    """
+    if not _COBALT_API_KEY:
+        LOG.debug("Cobalt API key not set (COBALT_API_KEY), skipping Cobalt.")
+        return None
+
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
     for instance in _COBALT_INSTANCES:
         try:
@@ -234,6 +245,7 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": _PROXY_HEADERS["User-Agent"],
+                "Authorization": f"Api-Key {_COBALT_API_KEY}",
             }
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -331,25 +343,25 @@ _PLAYER_CLIENTS = [
         "context": {
             "client": {
                 "clientName": "IOS_MUSIC",
-                "clientVersion": "7.36.1",
+                "clientVersion": "7.41.2",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
-                "osVersion": "18.2",
+                "osVersion": "18.5",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
-        "ua": "com.google.ios.youtubemusic/7.36.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X)",
+        "ua": "com.google.ios.youtubemusic/7.41.2 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X)",
     },
     {
         "name": "ANDROID_VR",
         "context": {
             "client": {
                 "clientName": "ANDROID_VR",
-                "clientVersion": "1.62.27",
+                "clientVersion": "1.65.12",
                 "androidSdkVersion": 34,
                 "hl": "en",
                 "gl": "US",
@@ -359,32 +371,32 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-        "ua": "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 14) gzip",
+        "ua": "com.google.android.apps.youtube.vr.oculus/1.65.12 (Linux; U; Android 14) gzip",
     },
     {
         "name": "IOS",
         "context": {
             "client": {
                 "clientName": "IOS",
-                "clientVersion": "20.05.1",
+                "clientVersion": "20.20.3",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
-                "osVersion": "18.2",
+                "osVersion": "18.5",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-        "ua": "com.google.ios.youtube/20.05.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X)",
+        "ua": "com.google.ios.youtube/20.20.3 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X)",
     },
     {
         "name": "ANDROID_MUSIC",
         "context": {
             "client": {
                 "clientName": "ANDROID_MUSIC",
-                "clientVersion": "7.31.52",
+                "clientVersion": "7.36.51",
                 "androidSdkVersion": 34,
                 "hl": "en",
                 "gl": "US",
@@ -394,7 +406,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-        "ua": "com.google.android.apps.youtube.music/7.31.52 (Linux; U; Android 14) gzip",
+        "ua": "com.google.android.apps.youtube.music/7.36.51 (Linux; U; Android 14) gzip",
     },
     {
         "name": "TV_EMBEDDED",
@@ -462,7 +474,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "context": {
             "client": {
                 "clientName": "WEB",
-                "clientVersion": "2.20250520.01.00",
+                "clientVersion": "2.20250522.01.00",
                 "hl": "en",
                 "gl": "US",
             }
@@ -471,7 +483,6 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "playbackContext": {
             "contentPlaybackContext": {
                 "html5Preference": "HTML5_PREF_WANTS",
-                "signatureTimestamp": 20152,
             }
         },
         "contentCheckOk": True,
@@ -483,14 +494,14 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
+            "Chrome/136.0.0.0 Safari/537.36"
         ),
         "Origin": origin,
         "Referer": f"{origin}/",
         "Cookie": cookie_header,
         "Authorization": auth_header,
         "X-Youtube-Client-Name": "1",
-        "X-Youtube-Client-Version": "2.20250520.01.00",
+        "X-Youtube-Client-Version": "2.20250522.01.00",
     }
 
     api_url = f"{_INNERTUBE_PLAYER_URL}?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
@@ -792,6 +803,11 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "fragment_retries": 5,
         "noplaylist": True,
         "check_formats": False,       # CRITICAL: skip format verification on cloud
+        "format_sort": [
+            "proto:https",             # prefer HTTPS streams
+            "hasaud",                  # prefer formats with audio
+            "source",                  # prefer higher quality source
+        ],
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
@@ -806,7 +822,7 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
+                "Chrome/136.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9",
         },
@@ -844,7 +860,7 @@ _INNERTUBE_SEARCH_URL = "https://www.youtube.com/youtubei/v1/search"
 _INNERTUBE_CONTEXT = {
     "client": {
         "clientName": "WEB",
-        "clientVersion": "2.20241120.01.00",
+        "clientVersion": "2.20250520.01.00",
         "hl": "en",
         "gl": "US",
     }
@@ -855,7 +871,7 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Chrome/136.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
     "Origin": "https://www.youtube.com",
@@ -1139,7 +1155,7 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious video failed for %s", video_id)
 
-    # Try 4: yt-dlp (last resort)
+    # Try 5: yt-dlp (last resort)
     LOG.info("All direct APIs failed, trying yt-dlp for video: %s", url)
     loop = asyncio.get_running_loop()
     try:
@@ -1366,7 +1382,7 @@ async def download_audio(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Proxy audio download failed for %s", video_id)
 
-    # Try 3: yt-dlp (last resort)
+    # Try 4: yt-dlp (last resort)
     LOG.info("Direct download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
@@ -1420,7 +1436,7 @@ async def download_video(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Proxy video download failed for %s", video_id)
 
-    # Try 3: yt-dlp (last resort)
+    # Try 4: yt-dlp (last resort)
     LOG.info("Direct download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
