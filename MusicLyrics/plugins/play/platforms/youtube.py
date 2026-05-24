@@ -383,12 +383,143 @@ _PLAYER_CLIENTS = [
 ]
 
 
+def _parse_netscape_cookies(cookie_file: str) -> dict[str, str]:
+    """Parse Netscape cookie file into a dict of name->value for youtube.com."""
+    cookies = {}
+    try:
+        with open(cookie_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    # But parse #HttpOnly_ lines
+                    if line.startswith("#HttpOnly_"):
+                        line = line[len("#HttpOnly_"):]
+                    else:
+                        continue
+                parts = line.split("\t")
+                if len(parts) >= 7 and "youtube" in parts[0]:
+                    cookies[parts[5]] = parts[6]
+    except Exception:
+        pass
+    return cookies
+
+
+async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Optional[dict]:
+    """Try WEB client InnerTube with cookie authentication.
+
+    This is the most reliable method for cloud servers when cookies are available.
+    YouTube trusts WEB client requests with valid login cookies even from cloud IPs.
+    """
+    cookies = _parse_netscape_cookies(cookie_file)
+    if not cookies.get("SID") and not cookies.get("__Secure-1PSID"):
+        return None  # No valid login cookies
+
+    # Build cookie header string
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+    # Generate SAPISIDHASH for authenticated requests
+    sapisid = cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID", "")
+    import hashlib
+    import time as _time
+    origin = "https://www.youtube.com"
+    timestamp = str(int(_time.time()))
+    hash_input = f"{timestamp} {sapisid} {origin}"
+    sapisidhash = hashlib.sha1(hash_input.encode()).hexdigest()
+    auth_header = f"SAPISIDHASH {timestamp}_{sapisidhash}"
+
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20250520.01.00",
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+        "videoId": video_id,
+        "playbackContext": {
+            "contentPlaybackContext": {
+                "html5Preference": "HTML5_PREF_WANTS",
+                "signatureTimestamp": 20152,
+            }
+        },
+        "contentCheckOk": True,
+        "racyCheckOk": True,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Origin": origin,
+        "Referer": f"{origin}/",
+        "Cookie": cookie_header,
+        "Authorization": auth_header,
+        "X-Youtube-Client-Name": "1",
+        "X-Youtube-Client-Version": "2.20250520.01.00",
+    }
+
+    api_url = f"{_INNERTUBE_PLAYER_URL}?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    LOG.debug("Innertube WEB+cookies HTTP %d for %s", resp.status, video_id)
+                    return None
+                data = await resp.json()
+
+                ps = data.get("playabilityStatus", {})
+                if ps.get("status") != "OK":
+                    LOG.debug("Innertube WEB+cookies: status=%s for %s",
+                             ps.get("status"), video_id)
+                    return None
+
+                sd = data.get("streamingData", {})
+                all_fmts = sd.get("adaptiveFormats", []) + sd.get("formats", [])
+
+                # With WEB client, formats may have signatureCipher — we accept both
+                if all_fmts:
+                    # Prefer direct URLs
+                    direct = [f for f in all_fmts
+                              if f.get("url") and not f.get("signatureCipher")]
+                    if direct:
+                        LOG.info("Innertube WEB+cookies: %d direct formats for %s",
+                                len(direct), video_id)
+                        return data
+                    else:
+                        LOG.debug("Innertube WEB+cookies: %d formats but all cipher for %s",
+                                 len(all_fmts), video_id)
+    except Exception as e:
+        LOG.debug("Innertube WEB+cookies error for %s: %s", video_id, e)
+
+    return None
+
+
 async def _innertube_player(video_id: str) -> Optional[dict]:
     """Get player response from YouTube Innertube Player API directly.
 
-    Tries multiple client contexts. Mobile clients (ANDROID, IOS) typically
-    return direct stream URLs without signature cipher — no yt-dlp needed.
+    Tries WEB client with cookies first (best for cloud servers),
+    then mobile clients for direct stream URLs without signature cipher.
     """
+    # Try WEB client with cookies first (works on cloud IPs when authenticated)
+    cookie_file = _get_cookie()
+    if cookie_file:
+        try:
+            result = await _innertube_web_with_cookies(video_id, cookie_file)
+            if result:
+                return result
+        except Exception:
+            LOG.debug("Innertube WEB+cookies failed for %s", video_id)
+
     for client in _PLAYER_CLIENTS:
         try:
             payload = {
@@ -586,23 +717,37 @@ def _get_cookie() -> Optional[str]:
 
 # ── yt-dlp player client rotation ────────────────────────────────────────────
 # YouTube aggressively blocks certain clients on cloud IPs.
-# Updated May 2026 — prioritize clients that work on Heroku/cloud.
-# Valid clients (yt-dlp 2026.x): web, web_safari, web_embedded, web_music,
-#   web_creator, android, android_vr, ios, ios_music, mweb, tv, tv_embedded
-_CLIENT_COMBOS: list[list[str]] = [
+# Updated May 2026 — with cookies, "web" client works best on cloud.
+# Without cookies, mobile/TV clients are tried.
+_CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
+    ["web"],                           # Web client — BEST with cookies on cloud
+    ["web_music"],                     # YouTube Music web — good with cookies
+    ["web_safari"],                    # Safari — cookies help
+    ["ios_music"],                     # iOS Music fallback
+    ["android_vr"],                    # VR client fallback
+]
+
+_CLIENT_COMBOS_NO_COOKIES: list[list[str]] = [
     ["ios_music"],                     # Best for cloud — rarely blocked
     ["android_vr"],                    # VR client — low detection rate
     ["ios"],                           # iOS client — good for music
     ["web_music"],                     # YouTube Music web client
     ["tv_embedded"],                   # TV embedded player
     ["mweb"],                          # Mobile web fallback
-    ["web_safari"],                    # Safari web client
 ]
 
 
+def _get_client_combos() -> list[list[str]]:
+    """Return appropriate client combos based on cookie availability."""
+    if _get_cookie():
+        return _CLIENT_COMBOS_WITH_COOKIES
+    return _CLIENT_COMBOS_NO_COOKIES
+
+
 def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
+    combos = _get_client_combos()
     if client_combo is None:
-        client_combo = _CLIENT_COMBOS[0]
+        client_combo = combos[0]
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -613,9 +758,11 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "retries": 5,
         "fragment_retries": 5,
         "noplaylist": True,
+        "check_formats": False,       # CRITICAL: skip format verification on cloud
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
+                "player_skip": ["webpage"],  # Skip webpage player (faster)
             },
         },
         "http_headers": {
@@ -1009,26 +1156,35 @@ def _extract_stream_from_info(info: dict, audio_only: bool) -> Optional[str]:
 
     # From requested_formats
     for fmt_info in info.get("requested_formats", []):
-        if audio_only and fmt_info.get("acodec", "none") != "none":
-            return fmt_info.get("url")
-        if not audio_only and fmt_info.get("vcodec", "none") != "none":
-            return fmt_info.get("url")
+        fmt_url = fmt_info.get("url")
+        if fmt_url:
+            if audio_only and fmt_info.get("acodec", "none") != "none":
+                return fmt_url
+            if not audio_only and fmt_info.get("vcodec", "none") != "none":
+                return fmt_url
 
-    # From all formats
+    # From all formats — be very permissive
     formats = info.get("formats", [])
     if audio_only:
         audio_fmts = [f for f in formats
-                      if f.get("acodec", "none") != "none"
-                      and f.get("vcodec") in ("none", None)]
+                      if f.get("url")
+                      and f.get("acodec", "none") != "none"]
         if audio_fmts:
-            best = max(audio_fmts, key=lambda f: f.get("abr", 0) or 0)
+            best = max(audio_fmts, key=lambda f: f.get("abr", 0) or f.get("tbr", 0) or 0)
             return best.get("url")
     else:
         video_fmts = [f for f in formats
-                      if f.get("vcodec", "none") != "none"]
+                      if f.get("url")
+                      and f.get("vcodec", "none") != "none"]
         if video_fmts:
             best = max(video_fmts, key=lambda f: f.get("height", 0) or 0)
             return best.get("url")
+
+    # Last resort: ANY format with a URL
+    any_fmt = [f for f in formats if f.get("url")]
+    if any_fmt:
+        LOG.info("Using fallback format (any available) for stream")
+        return any_fmt[-1].get("url")
 
     return None
 
@@ -1042,7 +1198,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         fmt = "bv*[height<=720]+ba*/bv*+ba*/b"  # very permissive video+audio
 
     last_err = None
-    for combo in _CLIENT_COMBOS:
+    for combo in _get_client_combos():
         opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1244,7 +1400,7 @@ def _get_info_sync(url: str) -> Optional[dict]:
     import yt_dlp
 
     last_err = None
-    for combo in _CLIENT_COMBOS:
+    for combo in _get_client_combos():
         opts = {**_base_ytdlp_opts(client_combo=combo), "skip_download": True}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1274,7 +1430,7 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     loop = asyncio.get_running_loop()
 
     last_err = None
-    for combo in _CLIENT_COMBOS:
+    for combo in _get_client_combos():
         run_opts = {**opts}
         # Build extractor_args preserving PO token and visitor data
         yt_args = {"player_client": combo}
