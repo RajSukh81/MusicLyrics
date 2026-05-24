@@ -1,10 +1,14 @@
-"""AI chatbot plugin -- replies to group messages intelligently."""
+"""AI chatbot plugin -- replies to group messages intelligently.
+
+Uses Google Gemini API with automatic model fallback and smart
+context-aware local replies when API quota is exhausted.
+"""
 
 import asyncio
 import logging
 import random
+import re
 import time
-import hashlib
 from collections import deque
 from typing import Optional
 
@@ -19,13 +23,17 @@ from config import Config
 
 LOG = logging.getLogger(__name__)
 
-# ── Conversation history per chat (last N exchanges) ──────────────────────────
+# ── Conversation history per chat ─────────────────────────────────────────────
 _MAX_HISTORY = 10
 _chat_histories: dict[int, deque] = {}
 
 # ── Track recent replies to avoid repetition ──────────────────────────────────
-_MAX_RECENT = 15
+_MAX_RECENT = 30
 _recent_replies: dict[int, deque] = {}
+
+# ── API rate limit tracking ───────────────────────────────────────────────────
+_api_cooldown_until: float = 0  # timestamp when cooldown expires
+_API_COOLDOWN_SECONDS = 60  # wait 60s after a 429 before retrying
 
 
 def _get_history(chat_id: int) -> deque:
@@ -40,48 +48,70 @@ def _get_recent(chat_id: int) -> deque:
     return _recent_replies[chat_id]
 
 
-# ── Bangla fallback replies — large set to reduce repetition ──────────────────
-_BANGLA_REPLIES = [
+# ── Context-aware reply categories ────────────────────────────────────────────
+_GREETINGS = [
+    "হ্যালো! কেমন আছো? আমি MusicLyrics Bot! 😊",
+    "হাই! কী খবর? কিছু লাগলে বলো! 🎵",
+    "স্বাগতম! আমি তোমার মিউজিক বট! কী দরকার বলো! 🎶",
+    "হ্যাঁ বলো! কী সাহায্য করতে পারি? 😄",
+    "নমস্কার! আজকে কী শুনবে? /play দাও! 🎧",
+]
+
+_MUSIC_RESPONSES = [
+    "গান শুনতে চাও? /play দিয়ে গানের নাম লেখো! 🎵",
+    "অবশ্যই! /play <গানের নাম> দিয়ে চেষ্টা করো! 🎶",
+    "ভিডিও সহ শুনতে চাইলে /vplay ব্যবহার করো! 🎬",
+    "গান ডাউনলোড করতে /song <নাম> দাও! 📥",
+    "/play দাও, আমি তোমার জন্য বাজাবো! 🎤",
+]
+
+_FUN_RESPONSES = [
+    "গেম খেলবে? /quiz বা /truth চেষ্টা করো! 🎮",
+    "বোর হচ্ছো? /ttt দিয়ে টিক-ট্যাক-টো খেলো! 🎯",
+    "/dare দাও, মজা করো! 😂",
+    "/flip দিয়ে কয়েন টস করো! 🪙",
+    "/dice দিয়ে ডাইস গড়াও! 🎲",
+]
+
+_THANKS_RESPONSES = [
+    "ধন্যবাদ তোমাকেও! 😊",
+    "স্বাগতম! আরো কিছু লাগলে বলো! 💖",
+    "কোনো ব্যাপার না! আমি তো তোমার জন্যই! 🤖",
+    "আনন্দিত হলাম সাহায্য করতে পেরে! 🙌",
+    "ইউ আর ওয়েলকাম! 🎵",
+]
+
+_GENERAL_REPLIES = [
     "হ্যাঁ ভাই, বলো কী হেল্প লাগবে? 😄",
     "আমি শুনছি! কী দরকার বলো? 🎵",
     "বলো বলো, আমি আছি! 😊",
     "কী খবর? কিছু লাগলে বলো! 🎶",
     "হুম, বুঝেছি! আর কিছু? 🤔",
     "ঠিক আছে ভাই! 👍",
-    "মজা করছো নাকি? 😂",
     "আচ্ছা আচ্ছা, তারপর? 😏",
     "ওকে বস! কিছু দরকার হলে বলো! 💪",
-    "হা হা, ভালো বলেছো! 😄",
     "তুমি তো দারুণ! 🔥",
     "আমি তোমার বট, যা বলবে করব! 🤖",
-    "গান শুনবে? /play দিয়ে গানের নাম লেখো! 🎵",
-    "বোর হচ্ছো? /quiz বা /truth দিয়ে গেম খেলো! 🎮",
     "কিছু জানতে চাইলে জিজ্ঞেস করো! 📖",
     "আমি সবসময় তোমার জন্য আছি! 💖",
-    "কি বলো? আমি তো বট, কিন্তু তোমার কথা শুনি! 🎧",
-    "গান ছাড়ো! /play দাও! 🎶",
-    "তুমি ভালো মানুষ! আমি জানি! 😊",
-    "হ্যাঁ রে, বলো কী চাই? 🙌",
+    "হ্যাঁ ভাই, আমি রেডি! কী করবো বলো! 🚀",
+    "দারুণ! আরো কিছু বলো! 🌟",
+    "আমি AI বট, কিন্তু তোমার ভালো বন্ধু! 🤝",
+    "ওহো! সেটা তো ইন্টারেস্টিং! 🧐",
+    "চলো কিছু মজার কাজ করি! 🎉",
+    "কোনো প্রশ্ন থাকলে নির্দ্বিধায় জিজ্ঞেস করো! ✋",
+    "আমি ২৪/৭ অনলাইন আছি তোমার জন্য! ⏰",
     "আজকে কেমন আছো? আমি তো সবসময়ই ভালো! 😎",
     "তোমার সাথে কথা বলে মজা লাগছে! 😁",
     "আরে বাহ! তুমি তো ভালোই বলেছো! 👏",
     "একটু অপেক্ষা করো, ভাবছি... 🤔💭",
     "ও আচ্ছা! বুঝলাম বুঝলাম! 💡",
-    "তুমি কি গান পছন্দ করো? /play চেষ্টা করো! 🎤",
-    "ভিডিও দেখতে চাও? /vplay ট্রাই করো! 🎬",
-    "হ্যাঁ ভাই, আমি রেডি! কী করবো বলো! 🚀",
-    "দারুণ! আরো কিছু বলো! 🌟",
-    "আমি AI বট, কিন্তু তোমার ভালো বন্ধু! 🤝",
-    "সুন্দর কথা বলেছো! 💐",
-    "ওহো! সেটা তো ইন্টারেস্টিং! 🧐",
-    "চলো কিছু মজার কাজ করি! 🎉",
-    "তুমি চাইলে /song দিয়ে গান ডাউনলোড করতে পারো! 📥",
-    "কোনো প্রশ্ন থাকলে নির্দ্বিধায় জিজ্ঞেস করো! ✋",
-    "আমি ২৪/৭ অনলাইন আছি তোমার জন্য! ⏰",
-    "তুমি কি জানো আমি গেমও খেলাতে পারি? /ttt চেষ্টা করো! 🎯",
     "হাহা সেটা মজার ছিল! 😆",
-    "আচ্ছা ঠিক আছে, পরে আবার কথা হবে! 👋",
     "তোমার জন্য কী করতে পারি আজকে? 🎁",
+    "সুন্দর কথা বলেছো! 💐",
+    "মজা করছো নাকি? 😂",
+    "হা হা, ভালো বলেছো! 😄",
+    "তুমি ভালো মানুষ! আমি জানি! 😊",
 ]
 
 _EMOJI_REACTIONS = [
@@ -89,84 +119,134 @@ _EMOJI_REACTIONS = [
     "\U0001f929", "\U0001f44f", "\U0001f601", "\U0001f60e",
 ]
 
+# ── Keyword patterns for smart replies ────────────────────────────────────────
+_GREETING_KEYWORDS = re.compile(
+    r"\b(hi|hello|hey|হাই|হ্যালো|হেলো|স্বাগতম|নমস্কার|সুপ্রভাত|শুভ|কেমন আছ|কি খবর|কি অবস্থা)\b",
+    re.IGNORECASE,
+)
+_MUSIC_KEYWORDS = re.compile(
+    r"\b(গান|music|song|play|বাজা|শুনব|শুনতে|গানের|মিউজিক|ভিডিও|video|audio|অডিও)\b",
+    re.IGNORECASE,
+)
+_FUN_KEYWORDS = re.compile(
+    r"\b(game|গেম|খেল|মজা|fun|বোর|bore|quiz|truth|dare|খেলা|খেলব)\b",
+    re.IGNORECASE,
+)
+_THANKS_KEYWORDS = re.compile(
+    r"\b(ধন্যবাদ|thanks|thank|থ্যাংক|tnx|thx|ty|শুকরিয়া)\b",
+    re.IGNORECASE,
+)
 
-def _pick_non_repeating(chat_id: int) -> str:
-    """Pick a reply from _BANGLA_REPLIES that hasn't been used recently."""
+
+def _smart_reply(text: str, chat_id: int) -> str:
+    """Generate context-aware reply based on keyword matching."""
     recent = _get_recent(chat_id)
-    available = [r for r in _BANGLA_REPLIES if r not in recent]
+
+    # Detect category
+    if _GREETING_KEYWORDS.search(text):
+        pool = _GREETINGS
+    elif _MUSIC_KEYWORDS.search(text):
+        pool = _MUSIC_RESPONSES
+    elif _FUN_KEYWORDS.search(text):
+        pool = _FUN_RESPONSES
+    elif _THANKS_KEYWORDS.search(text):
+        pool = _THANKS_RESPONSES
+    else:
+        pool = _GENERAL_REPLIES
+
+    # Pick non-repeating from the category
+    available = [r for r in pool if r not in recent]
     if not available:
-        # All used recently, reset
+        # Try general pool
+        available = [r for r in _GENERAL_REPLIES if r not in recent]
+    if not available:
         recent.clear()
-        available = _BANGLA_REPLIES
+        available = pool
+
     chosen = random.choice(available)
     recent.append(chosen)
     return chosen
 
 
-async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
-    """Get AI response using configured API, or fallback to smart replies."""
-    if not Config.AI_API_KEY:
-        return _pick_non_repeating(chat_id)
+# ── Gemini API models (ordered by preference) ────────────────────────────────
+_GEMINI_MODELS = [
+    "gemini-2.0-flash-lite",   # Highest free quota
+    "gemini-1.5-flash",        # Good free quota
+    "gemini-2.0-flash",        # Standard (may hit quota fast)
+]
 
-    # Build conversation context from history
+
+async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
+    """Get AI response — tries Gemini API with model fallback,
+    then uses smart context-aware local replies."""
+    global _api_cooldown_until
+
+    if not Config.AI_API_KEY:
+        return _smart_reply(text, chat_id)
+
+    # Respect cooldown after 429
+    if time.time() < _api_cooldown_until:
+        LOG.debug("API in cooldown, using smart reply")
+        return _smart_reply(text, chat_id)
+
     history = _get_history(chat_id)
 
-    # Try Google Gemini API
+    # Try each Gemini model
+    for model in _GEMINI_MODELS:
+        result = await _try_gemini(model, text, chat_id, user_name, history)
+        if result:
+            return result
+
+    # All models failed, use smart reply
+    return _smart_reply(text, chat_id)
+
+
+async def _try_gemini(
+    model: str, text: str, chat_id: int,
+    user_name: str, history: deque
+) -> Optional[str]:
+    """Try a single Gemini model. Returns reply or None."""
+    global _api_cooldown_until
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{model}:generateContent"
+        f"?key={Config.AI_API_KEY}"
+    )
+
+    system_prompt = (
+        "You are MusicLyrics Bot, a fun and helpful Telegram group bot. "
+        "Reply in the same language the user writes in (Bengali/Bangla or English). "
+        "Keep replies short (1-3 sentences), friendly, and casual. "
+        "You can suggest music commands like /play, /vplay, /song when relevant. "
+        "Be witty, entertaining, and always vary your responses. "
+        "Never repeat the same reply. "
+        "If someone asks about your capabilities, mention music streaming, "
+        "games (/quiz, /truth, /dare, /ttt), and other features."
+    )
+
+    contents = []
+    for role, msg in history:
+        contents.append({"role": role, "parts": [{"text": msg}]})
+
+    user_text = f"[User: {user_name}] {text}" if user_name else text
+    contents.append({"role": "user", "parts": [{"text": user_text}]})
+
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": 200,
+            "temperature": 0.9,
+            "topP": 0.95,
+        },
+    }
+
     try:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.0-flash:generateContent"
-            f"?key={Config.AI_API_KEY}"
-        )
-
-        # Build conversation messages
-        contents = []
-
-        # System instruction via first user message
-        system_prompt = (
-            "You are MusicLyrics Bot, a fun and helpful Telegram group bot. "
-            "Reply in the same language the user writes in (Bengali/Bangla or English). "
-            "Keep replies short (1-3 sentences), friendly, and casual. "
-            "You can suggest music commands like /play, /vplay, /song when relevant. "
-            "Be witty, entertaining, and vary your responses. "
-            "Never repeat the same reply twice. "
-            "If someone asks about your capabilities, mention music streaming, "
-            "games (/quiz, /truth, /dare, /ttt), and other features."
-        )
-
-        # Add conversation history for context
-        for role, msg in history:
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg}],
-            })
-
-        # Add current message
-        user_text = f"{text}"
-        if user_name:
-            user_text = f"[User: {user_name}] {text}"
-
-        contents.append({
-            "role": "user",
-            "parts": [{"text": user_text}],
-        })
-
-        payload = {
-            "system_instruction": {
-                "parts": [{"text": system_prompt}],
-            },
-            "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": 200,
-                "temperature": 0.9,
-                "topP": 0.95,
-            },
-        }
-
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=12),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -176,29 +256,33 @@ async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
                         if parts:
                             reply = parts[0].get("text", "").strip()
                             if reply:
-                                # Save to history
                                 history.append(("user", text))
                                 history.append(("model", reply))
                                 return reply
-                else:
-                    error_text = await resp.text()
+                elif resp.status == 429:
+                    # Quota exceeded — set cooldown
+                    _api_cooldown_until = time.time() + _API_COOLDOWN_SECONDS
                     LOG.warning(
-                        "Gemini API error (status %d): %s",
-                        resp.status, error_text[:300],
+                        "Gemini %s quota exceeded (429). Cooldown %ds.",
+                        model, _API_COOLDOWN_SECONDS,
                     )
+                    return None
+                else:
+                    LOG.warning("Gemini %s HTTP %d", model, resp.status)
+                    return None
     except asyncio.TimeoutError:
-        LOG.warning("Gemini API timeout for chat %s", chat_id)
+        LOG.warning("Gemini %s timeout", model)
     except Exception as e:
-        LOG.warning("AI API call failed: %s", e)
+        LOG.warning("Gemini %s error: %s", model, e)
 
-    return _pick_non_repeating(chat_id)
+    return None
 
+
+# ── Reactions ─────────────────────────────────────────────────────────────────
 
 async def _try_react(client, message: Message):
-    """Try to add a random emoji reaction to the message."""
     try:
         emoji = random.choice(_EMOJI_REACTIONS)
-        # Try multiple methods for compatibility
         try:
             from pyrogram.types import ReactionTypeEmoji
             await client.send_reaction(
@@ -218,19 +302,15 @@ async def _try_react(client, message: Message):
         except Exception:
             pass
     except Exception:
-        pass  # Reactions may not be available
+        pass
 
 
-# -- Custom filter: check if message is a reply to the bot --
+# ── Filters ───────────────────────────────────────────────────────────────────
+
 async def _is_reply_to_bot(_, client, message: Message) -> bool:
-    """Return True if message is a text reply to the bot's own message."""
-    if not message.text:
+    if not message.text or message.text.startswith("/"):
         return False
-    if message.text.startswith("/"):
-        return False
-    if not message.reply_to_message:
-        return False
-    if not message.reply_to_message.from_user:
+    if not message.reply_to_message or not message.reply_to_message.from_user:
         return False
     try:
         me = await client.get_me()
@@ -241,12 +321,8 @@ async def _is_reply_to_bot(_, client, message: Message) -> bool:
 _reply_to_bot_filter = filters.create(_is_reply_to_bot, name="ReplyToBotFilter")
 
 
-# -- Custom filter: check if bot is @mentioned --
 async def _is_bot_mentioned(_, client, message: Message) -> bool:
-    """Return True if bot's @username appears in the message text."""
-    if not message.text:
-        return False
-    if message.text.startswith("/"):
+    if not message.text or message.text.startswith("/"):
         return False
     try:
         me = await client.get_me()
@@ -258,23 +334,22 @@ _bot_mentioned_filter = filters.create(_is_bot_mentioned, name="BotMentionedFilt
 
 
 def _get_user_name(message: Message) -> str:
-    """Extract a display name from the message sender."""
     if message.from_user:
         return message.from_user.first_name or ""
     return ""
 
 
+# ── Handlers ──────────────────────────────────────────────────────────────────
+
 @bot.on_message(filters.group & _reply_to_bot_filter, group=50)
 async def ai_reply_when_replied(client, message: Message):
-    """Respond when someone replies to the bot's message in a group."""
     try:
         await _try_react(client, message)
         user_text = message.text or ""
         if not user_text.strip():
             return
         response = await _ai_response(
-            user_text,
-            chat_id=message.chat.id,
+            user_text, chat_id=message.chat.id,
             user_name=_get_user_name(message),
         )
         if response:
@@ -285,7 +360,6 @@ async def ai_reply_when_replied(client, message: Message):
 
 @bot.on_message(filters.group & _bot_mentioned_filter, group=51)
 async def ai_reply_when_mentioned(client, message: Message):
-    """Respond when the bot is @mentioned in a group."""
     try:
         me = await client.get_me()
         clean_text = (message.text or "").replace(f"@{me.username}", "").strip()
@@ -293,8 +367,7 @@ async def ai_reply_when_mentioned(client, message: Message):
             clean_text = "hi"
         await _try_react(client, message)
         response = await _ai_response(
-            clean_text,
-            chat_id=message.chat.id,
+            clean_text, chat_id=message.chat.id,
             user_name=_get_user_name(message),
         )
         if response:
@@ -305,15 +378,13 @@ async def ai_reply_when_mentioned(client, message: Message):
 
 @bot.on_message(filters.private & filters.text, group=52)
 async def ai_reply_private(client, message: Message):
-    """Respond to non-command text messages in private chat."""
     user_text = message.text or ""
     if not user_text.strip() or user_text.startswith("/"):
         return
     try:
         await _try_react(client, message)
         response = await _ai_response(
-            user_text,
-            chat_id=message.chat.id,
+            user_text, chat_id=message.chat.id,
             user_name=_get_user_name(message),
         )
         if response:
