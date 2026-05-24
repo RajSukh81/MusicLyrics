@@ -148,7 +148,7 @@ async def stream_audio_with_image(
 
 async def pause_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.pause(chat_id)
+        await pytgcalls.pause_stream(chat_id)
         return True
     except Exception:
         LOG.exception("Pause failed: %s", chat_id)
@@ -157,7 +157,7 @@ async def pause_stream(chat_id: int) -> bool:
 
 async def resume_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.resume(chat_id)
+        await pytgcalls.resume_stream(chat_id)
         return True
     except Exception:
         LOG.exception("Resume failed: %s", chat_id)
@@ -178,7 +178,7 @@ async def set_volume(chat_id: int, volume: int) -> bool:
     """Set playback volume (1-200)."""
     volume = max(1, min(200, volume))
     try:
-        await pytgcalls.change_volume_call(chat_id, volume)
+        await pytgcalls.change_volume(chat_id, volume)
         return True
     except Exception:
         LOG.exception("Volume change failed: %s", chat_id)
@@ -188,7 +188,7 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
     try:
-        await pytgcalls.leave_call(chat_id)
+        await pytgcalls.leave_group_call(chat_id)
     except Exception:
         LOG.exception("Leave VC failed: %s", chat_id)
     _active_chats.discard(chat_id)

@@ -196,7 +196,6 @@ async def vplay_command(client: Client, message: Message):
         platform=platform if platform != "query" else "youtube",
     )
 
-    cq = await get_chat_queue(chat_id)
     position = await add_to_queue(chat_id, item)
 
     if position > 1 and is_active(chat_id):

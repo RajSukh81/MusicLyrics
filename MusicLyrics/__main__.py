@@ -411,7 +411,7 @@ async def main():
                     calls = await calls
                 for chat_id in list(calls):
                     try:
-                        await pytgcalls.leave_call(chat_id)
+                        await pytgcalls.leave_group_call(chat_id)
                     except Exception:
                         pass
             except Exception:

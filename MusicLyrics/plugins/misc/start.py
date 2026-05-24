@@ -10,7 +10,11 @@ from pyrogram.enums import ChatType
 
 from MusicLyrics.bot import bot
 from config import Config
-from MusicLyrics.mongo.users_db import add_user
+try:
+    from MusicLyrics.mongo.users_db import add_user
+except Exception:
+    async def add_user(*args, **kwargs):
+        pass
 
 import logging
 

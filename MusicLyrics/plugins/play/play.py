@@ -20,7 +20,6 @@ from config import Config
 from MusicLyrics.plugins.play.queue import (
     QueueItem,
     add_to_queue,
-    get_current,
     get_chat_queue,
     format_duration,
 )
@@ -237,7 +236,6 @@ async def play_command(client: Client, message: Message):
         platform=platform if platform != "query" else "youtube",
     )
 
-    cq = await get_chat_queue(chat_id)
     position = await add_to_queue(chat_id, item)
 
     # If something is already playing, just queue it
