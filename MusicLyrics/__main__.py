@@ -8,6 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
+from pyrogram import idle
 from pyrogram.errors import FloodWait
 
 from config import Config
@@ -103,7 +104,21 @@ async def _start_with_retry(client, name, max_retries=5):
 
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
+
+    # CRITICAL: Fix event loop mismatch.
+    # Client() created at import time holds a reference to a stale loop.
+    # Reassign the dispatcher's loop to the currently running one so that
+    # add_handler() and dispatcher.start() schedule tasks on the correct loop.
+    running_loop = asyncio.get_running_loop()
+    bot.dispatcher.loop = running_loop
+    if userbot:
+        userbot.dispatcher.loop = running_loop
+
     _load_plugins()
+
+    # Verify handlers were registered
+    if not bot.dispatcher.groups:
+        LOG.warning("No handlers registered after plugin loading!")
 
     await _start_with_retry(bot, "Bot")
 
@@ -115,28 +130,13 @@ async def main():
     await _send_startup_message()
     LOG.info("MusicLyrics v%s is running.", __version__)
 
-    # Keep running until interrupted
-    stop_event = asyncio.Event()
-
-    def _handle_signal():
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            pass
-
-    await stop_event.wait()
+    # Keep running until interrupted (Pyrogram's official idle)
+    await idle()
 
     # Graceful shutdown
     LOG.info("Shutting down MusicLyrics...")
     try:
         if Config.STRING_SESSION and pytgcalls:
-            # py-tgcalls 2.x: pytgcalls.calls may be a coroutine or dict
-            # depending on version; handle both safely
             try:
                 calls = pytgcalls.calls
                 if asyncio.iscoroutine(calls):
