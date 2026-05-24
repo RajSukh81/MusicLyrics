@@ -1,12 +1,15 @@
 """Reaction features plugin for MusicLyrics bot."""
 
 from pyrogram import filters
-from pyrogram.types import Message
+from pyrogram.types import Message, ReactionTypeEmoji
 from pyrogram.errors import ReactionInvalid, MessageNotModified
 
 import random
+import logging
 
 from MusicLyrics.bot import bot
+
+LOG = logging.getLogger(__name__)
 
 # Actual emoji characters that Telegram supports for reactions
 REACTION_EMOJIS = [
@@ -63,6 +66,41 @@ REACTION_EMOJIS = [
 ]
 
 
+async def _send_reaction(client, chat_id, message_id, emoji):
+    """Send a reaction with compatibility across Pyrogram versions."""
+    try:
+        # pyrofork / pyrogram v2 with ReactionTypeEmoji
+        await client.send_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            emoji=[ReactionTypeEmoji(emoji=emoji)],
+        )
+        return True
+    except TypeError:
+        pass
+    try:
+        # Fallback: some versions accept plain emoji string
+        await client.send_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            emoji=emoji,
+        )
+        return True
+    except Exception:
+        pass
+    try:
+        # Another fallback: reaction parameter
+        await client.send_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)],
+        )
+        return True
+    except Exception as e:
+        LOG.warning("All reaction methods failed: %s", e)
+        raise
+
+
 @bot.on_message(filters.command("react"))
 async def react_cmd(client, message: Message):
     args = message.text.split(None, 1)
@@ -92,7 +130,8 @@ async def react_cmd(client, message: Message):
         emoji = args[1].strip()
 
     try:
-        await client.send_reaction(
+        await _send_reaction(
+            client,
             chat_id=message.chat.id,
             message_id=message.reply_to_message.id,
             emoji=emoji,
@@ -115,7 +154,8 @@ async def reactall_cmd(client, message: Message):
 
     emoji = random.choice(REACTION_EMOJIS[:20])
     try:
-        await client.send_reaction(
+        await _send_reaction(
+            client,
             chat_id=message.chat.id,
             message_id=message.reply_to_message.id,
             emoji=emoji,

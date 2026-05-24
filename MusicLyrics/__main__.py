@@ -40,8 +40,13 @@ async def _safe_send(chat_id: int, text: str, photo: str = None):
             )
     except FloodWait as e:
         LOG.warning("FloodWait %ds for chat %s, skipping log.", e.value, chat_id)
-    except Exception:
-        pass  # Never crash on log failure
+        await asyncio.sleep(e.value + 1)
+        try:
+            await bot.send_message(chat_id, text=text, disable_web_page_preview=True)
+        except Exception:
+            pass
+    except Exception as exc:
+        LOG.warning("Failed to send log to %s: %s", chat_id, exc)
 
 
 def log_to_group(text: str, photo: str = None):
@@ -87,17 +92,33 @@ async def _send_startup_message():
     if userbot:
         try:
             user_me = await userbot.get_me()
-            user_info = user_me.first_name
+            user_info = f"{user_me.first_name} (ID: {user_me.id})"
         except Exception:
             user_info = "N/A"
 
     handler_count = sum(len(h) for h in bot.dispatcher.groups.values())
+
+    # Gather system info
+    try:
+        import psutil
+        ram = psutil.virtual_memory()
+        ram_info = f"{ram.used // (1024**2)}MB / {ram.total // (1024**2)}MB ({ram.percent}%)"
+        cpu_info = f"{psutil.cpu_percent(interval=0.3)}%"
+    except Exception:
+        ram_info = "N/A"
+        cpu_info = "N/A"
+
     text = (
-        f"**MusicLyrics v{__version__} Started**\n\n"
-        f"Bot  : @{bot_me.username}\n"
-        f"User : {user_info}\n"
-        f"Handlers : {handler_count}\n"
-        f"PyTgCalls : {'Active' if pytgcalls else 'Disabled'}\n\n"
+        f"**MusicLyrics v{__version__} Started Successfully!**\n\n"
+        f"**Bot:** @{bot_me.username} (ID: `{bot_me.id}`)\n"
+        f"**Userbot:** {user_info}\n"
+        f"**Handlers:** {handler_count}\n"
+        f"**PyTgCalls:** {'Active' if pytgcalls else 'Disabled'}\n"
+        f"**CPU:** {cpu_info}\n"
+        f"**RAM:** {ram_info}\n"
+        f"**LOG_GROUP_ID:** `{Config.LOG_GROUP_ID or 'Not set'}`\n"
+        f"**OWNER_ID:** `{Config.OWNER_ID}`\n\n"
+        f"All systems operational. Bot is ready to receive commands.\n\n"
         f"[Support]({Config.SUPPORT_GROUP}) | "
         f"[Channel]({Config.SUPPORT_CHANNEL}) | "
         f"[Owner]({Config.OWNER_LINK})"
@@ -146,8 +167,17 @@ def _setup_event_logging():
                     log_to_group(
                         f"**Bot Added to New Group**\n\n"
                         f"Group: {message.chat.title}\n"
-                        f"Chat ID: {message.chat.id}\n"
+                        f"Chat ID: `{message.chat.id}`\n"
+                        f"Members: {message.chat.members_count or 'N/A'}\n"
                         f"Added by: {added_by}"
+                    )
+                    # Send welcome message to the group
+                    await message.reply_text(
+                        f"**ধন্যবাদ আমাকে যোগ করার জন্য!** 🎵\n\n"
+                        f"আমি {Config.BOT_NAME}! Music streaming, games, "
+                        f"security tools সব আছে।\n\n"
+                        f"/help দিয়ে সব কমান্ড দেখো!\n"
+                        f"Use /help to see all commands."
                     )
                     break
         except Exception:
@@ -159,30 +189,125 @@ def _setup_event_logging():
         try:
             me = await client.get_me()
             if message.left_chat_member and message.left_chat_member.id == me.id:
+                removed_by = message.from_user.mention if message.from_user else "Unknown"
                 log_to_group(
                     f"**Bot Removed from Group**\n\n"
                     f"Group: {message.chat.title}\n"
-                    f"Chat ID: {message.chat.id}"
+                    f"Chat ID: `{message.chat.id}`\n"
+                    f"Removed by: {removed_by}"
                 )
         except Exception:
             LOG.exception("Error in on_bot_removed")
 
+    @bot.on_message(filters.command([
+        "play", "p", "vplay", "vp", "song", "vsong",
+    ]) & filters.group, group=98)
+    async def _log_music_commands(client, message: Message):
+        """Log music commands in groups to owner."""
+        if not message.from_user:
+            return
+        user = message.from_user
+        cmd = message.text or ""
+        log_to_group(
+            f"**Music Command**\n\n"
+            f"**Group:** {message.chat.title}\n"
+            f"**Chat ID:** `{message.chat.id}`\n"
+            f"**User:** {user.mention} (`{user.id}`)\n"
+            f"**Command:** `{cmd[:200]}`"
+        )
+
     LOG.info("Event logging handlers registered.")
 
 
+def _setup_catchall_handler():
+    """Register a catch-all handler so the bot always responds."""
+
+    @bot.on_message(filters.command([
+        "start", "help", "play", "p", "vplay", "vp", "pause", "resume",
+        "skip", "next", "stop", "end", "seek", "volume", "vol", "queue",
+        "nowplaying", "np", "loop", "shuffle", "song", "vsong", "ping",
+        "alive", "ban", "unban", "mute", "unmute", "warn", "antispam",
+        "antiflood", "captcha", "blacklist", "setwelcome", "tr", "tts",
+        "sticker", "s", "toimg", "kang", "getsticker", "stickerid",
+        "info", "chatinfo", "paste", "telegraph", "tagall", "afk",
+        "react", "reactall", "emoji", "mixemoji", "randomemoji",
+        "broadcast", "stats", "addsudo", "rmsudo", "sudolist",
+        "status", "ttt", "quiz", "truth", "dare", "flip", "dice",
+        "wordseek", "kill", "pin", "unpin", "purge",
+        "filter", "filters", "clearfilter", "notes", "save", "get",
+    ]) & filters.private, group=99)
+    async def _log_private_commands(client, message: Message):
+        """Log all private commands to owner/log group."""
+        if not message.from_user:
+            return
+        user = message.from_user
+        cmd = message.text or message.caption or ""
+        log_to_group(
+            f"**Private Command**\n\n"
+            f"**User:** {user.mention} (`{user.id}`)\n"
+            f"**Username:** @{user.username or 'N/A'}\n"
+            f"**Command:** `{cmd[:200]}`"
+        )
+
+    @bot.on_message(~filters.me & ~filters.service & filters.private, group=100)
+    async def _catchall_private(client, message: Message):
+        """Respond to unrecognized private messages."""
+        if message.text and message.text.startswith("/"):
+            cmd = message.text.split()[0]
+            await message.reply_text(
+                f"❌ **Unknown command:** `{cmd}`\n\n"
+                f"কমান্ড তালিকা দেখতে /help দিন।\n"
+                f"Use /help to see all available commands."
+            )
+        # For non-command messages in private, optionally respond
+        # (don't spam in groups)
+
+    @bot.on_message(filters.group & filters.mentioned, group=101)
+    async def _on_mentioned_in_group(client, message: Message):
+        """Respond when bot is mentioned/tagged in a group."""
+        try:
+            me = await client.get_me()
+            text = message.text or message.caption or ""
+            if f"@{me.username}" in text:
+                await message.reply_text(
+                    f"**হ্যাঁ, আমি এখানে আছি!** 🎵\n\n"
+                    f"কমান্ড দেখতে /help দিন।\n"
+                    f"Use /help for all commands."
+                )
+        except Exception:
+            pass
+
+    LOG.info("Catch-all and mention handlers registered.")
+
+
 async def _delete_webhook():
-    """Explicitly delete any Telegram webhook to ensure long polling works."""
+    """Explicitly delete any Telegram webhook and drop pending updates."""
     url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
+    params = {"drop_pending_updates": "true"}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post(
+                url, json=params,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
                 result = await resp.json()
                 if result.get("result"):
-                    LOG.info("Webhook deleted successfully.")
+                    LOG.info("Webhook deleted + pending updates dropped.")
                 else:
-                    LOG.info("deleteWebhook response: %s", result)
+                    LOG.warning("deleteWebhook response: %s", result)
     except Exception as e:
         LOG.warning("Could not delete webhook: %s", e)
+        # Fallback: try GET method
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{url}?drop_pending_updates=true",
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    result = await resp.json()
+                    LOG.info("Webhook delete fallback response: %s", result)
+        except Exception as e2:
+            LOG.error("Webhook delete fallback also failed: %s", e2)
 
 
 async def _check_bot_info():
@@ -214,6 +339,15 @@ async def _check_bot_info():
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
 
+    # CRITICAL: Delete webhook FIRST — if a webhook is set, Telegram sends
+    # all updates there and long-polling receives NOTHING.
+    LOG.info("Step 1: Checking and deleting webhook...")
+    await _check_bot_info()
+    await _delete_webhook()
+    # Wait a moment for Telegram to process the webhook deletion
+    await asyncio.sleep(2)
+
+    LOG.info("Step 2: Loading plugins...")
     result = _load_plugins()
 
     handler_count = sum(len(h) for h in bot.dispatcher.groups.values())
@@ -221,19 +355,19 @@ async def main():
     if handler_count == 0:
         LOG.warning("No handlers registered after plugin loading!")
 
-    # CRITICAL: Delete any webhook BEFORE starting the bot.
-    # If a webhook is set (from a previous deployment), Telegram sends all
-    # updates to the webhook URL and long polling receives NOTHING.
-    await _check_bot_info()
-    await _delete_webhook()
-
+    LOG.info("Step 3: Starting bot client...")
     await _start_with_retry(bot, "Bot")
+
+    # Double-check: delete webhook again AFTER bot.start() in case
+    # Pyrogram re-set it during handshake
+    await _delete_webhook()
 
     # Verify bot can receive updates
     bot_me = await bot.get_me()
     LOG.info("Bot identity: @%s (ID: %d)", bot_me.username, bot_me.id)
 
     if Config.STRING_SESSION and userbot and pytgcalls:
+        LOG.info("Step 4: Starting userbot + PyTgCalls...")
         await _start_with_retry(userbot, "Userbot")
         try:
             await pytgcalls.start()
@@ -244,9 +378,13 @@ async def main():
                 "**Warning:** PyTgCalls failed to start.\n"
                 "Music streaming may not work."
             )
+    else:
+        LOG.info("Step 4: Skipped userbot (STRING_SESSION not set).")
 
     # Setup event logging (lightweight, non-blocking)
+    LOG.info("Step 5: Setting up event logging and catch-all handler...")
     _setup_event_logging()
+    _setup_catchall_handler()
 
     await _send_startup_message()
 
@@ -259,7 +397,7 @@ async def main():
                 "Check server logs for details."
             )
 
-    LOG.info("MusicLyrics v%s is running.", __version__)
+    LOG.info("MusicLyrics v%s is running. Waiting for updates...", __version__)
     await idle()
 
     # Graceful shutdown

@@ -80,6 +80,8 @@ async def download_audio(url: str) -> Optional[str]:
         "no_warnings": True,
         "geo_bypass": True,
         "nocheckcertificate": True,
+        "socket_timeout": 30,
+        "retries": 3,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -94,12 +96,15 @@ async def download_audio(url: str) -> Optional[str]:
 async def download_video(url: str) -> Optional[str]:
     """Download video+audio from *url* with yt-dlp; return file path."""
     opts = {
-        "format": "best[height<=720]/best",
+        "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "geo_bypass": True,
         "nocheckcertificate": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "merge_output_format": "mp4",
     }
     return await _run_ytdlp(url, opts)
 
