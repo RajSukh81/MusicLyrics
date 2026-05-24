@@ -110,6 +110,16 @@
       "description": "Google Gemini API key for AI chat features (optional). Get from https://aistudio.google.com/apikey",
       "required": false,
       "value": ""
+    },
+    "YOUTUBE_PROXY": {
+      "description": "Single YouTube proxy URL. Format: http://user:pass@host:port — REQUIRED for cloud platforms (Heroku/Railway/Render) where YouTube blocks server IPs.",
+      "required": false,
+      "value": ""
+    },
+    "YOUTUBE_PROXY_LIST": {
+      "description": "Multiple proxies for rotation (comma-separated). Supports Webshare format (ip:port:user:pass) and standard format (http://user:pass@host:port). RECOMMENDED over single proxy to avoid rate limits.",
+      "required": false,
+      "value": ""
     }
   },
   "formation": {

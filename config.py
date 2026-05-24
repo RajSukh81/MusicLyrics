@@ -74,9 +74,44 @@ class Config:
     AI_API_KEY = os.environ.get("AI_API_KEY")
 
     # ── Proxy for YouTube (essential for cloud deployments like Heroku) ──
-    # Set a residential/datacenter proxy to bypass YouTube IP blocks.
-    # Format: "http://user:pass@host:port" or "socks5://host:port"
+    # Single proxy: "http://user:pass@host:port" or "socks5://host:port"
     YOUTUBE_PROXY = os.environ.get("YOUTUBE_PROXY", "")
+
+    # Multiple proxy rotation: set YOUTUBE_PROXY_LIST with proxies separated
+    # by commas or newlines. Supported formats:
+    #   - http://user:pass@host:port  (ready-to-use URL)
+    #   - ip:port:user:pass           (Webshare / common format, auto-converted)
+    #   - user:pass@host:port         (auto-prefixed with http://)
+    YOUTUBE_PROXY_LIST_RAW = os.environ.get("YOUTUBE_PROXY_LIST", "")
+
+    @staticmethod
+    def _parse_proxy_list(raw: str) -> list[str]:
+        """Parse proxy list from env var into list of http:// URLs."""
+        if not raw.strip():
+            return []
+        proxies = []
+        # Split by comma, newline, or semicolon
+        for line in raw.replace(",", "\n").replace(";", "\n").split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Format: ip:port:user:pass (Webshare style)
+            parts = line.split(":")
+            if len(parts) == 4 and not line.startswith("http"):
+                ip, port, user, pw = parts
+                proxies.append(f"http://{user}:{pw}@{ip}:{port}")
+            # Format: user:pass@host:port (missing scheme)
+            elif "@" in line and not line.startswith("http"):
+                proxies.append(f"http://{line}")
+            # Format: already a URL
+            elif line.startswith("http://") or line.startswith("https://") or line.startswith("socks"):
+                proxies.append(line)
+            else:
+                # Unknown format, try as-is with http prefix
+                proxies.append(f"http://{line}")
+        return proxies
+
+    YOUTUBE_PROXIES: list[str] = _parse_proxy_list(YOUTUBE_PROXY_LIST_RAW)
 
     # ── Playback Defaults ────────────────────────────────────────────────
     DURATION_LIMIT_MIN = int(os.environ.get("DURATION_LIMIT_MIN", 60))

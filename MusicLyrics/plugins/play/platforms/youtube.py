@@ -70,7 +70,17 @@ _PROXY_HEADERS = {
 
 # ── Proxy support for cloud deployments ──────────────────────────────────────
 def _get_proxy() -> Optional[str]:
-    """Get proxy URL from config (essential for Heroku/cloud)."""
+    """Get a random proxy URL from the proxy list or single proxy config.
+
+    Supports proxy rotation: if YOUTUBE_PROXY_LIST is set with multiple
+    proxies, a random one is selected each time. Falls back to single
+    YOUTUBE_PROXY if list is empty.
+    """
+    # Priority 1: Proxy list (rotation)
+    if Config.YOUTUBE_PROXIES:
+        proxy = random.choice(Config.YOUTUBE_PROXIES)
+        return proxy
+    # Priority 2: Single proxy
     return Config.YOUTUBE_PROXY or os.environ.get("YOUTUBE_PROXY", "") or None
 
 
