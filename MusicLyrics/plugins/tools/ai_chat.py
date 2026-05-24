@@ -174,9 +174,10 @@ def _smart_reply(text: str, chat_id: int) -> str:
 
 # ── Gemini API models (ordered by preference) ────────────────────────────────
 _GEMINI_MODELS = [
-    "gemini-2.0-flash-lite",   # Highest free quota
-    "gemini-1.5-flash",        # Good free quota
-    "gemini-2.0-flash",        # Standard (may hit quota fast)
+    "gemini-2.5-flash",            # Newest, best quality
+    "gemini-2.0-flash-lite",       # Highest free quota
+    "gemini-2.0-flash",            # Standard
+    "gemini-1.5-flash",            # Fallback
 ]
 
 

@@ -31,26 +31,33 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # PIPED / INVIDIOUS API — cookie-free YouTube proxy (PRIMARY method)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Multiple public Piped API instances for redundancy
+# Multiple public Piped API instances for redundancy (updated May 2026)
 _PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
-    "https://pipedapi.in.projectsegfau.lt",
-    "https://api.piped.projectsegfau.lt",
-    "https://pipedapi.darkness.services",
-    "https://pipedapi.drgns.space",
     "https://pipedapi.r4fo.com",
     "https://pipedapi.leptons.xyz",
+    "https://pipedapi.moomoo.me",
+    "https://pipedapi.syncpundit.io",
+    "https://api.piped.yt",
+    "https://pipedapi.ngn.tf",
 ]
 
-# Invidious instances as additional fallback
+# Invidious instances as additional fallback (updated May 2026)
 _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.fdn.fr",
-    "https://invidious.privacyredirect.com",
     "https://invidious.protokolla.fi",
-    "https://vid.puffyan.us",
     "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
+    "https://invidious.perennialte.ch",
+    "https://invidious.privacyredirect.com",
+    "https://iv.datura.network",
+]
+
+# Cobalt API — reliable cloud-friendly YouTube proxy (no auth needed)
+_COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
 ]
 
 _PROXY_HEADERS = {
@@ -177,6 +184,61 @@ def _best_invidious_audio_url(data: dict) -> Optional[str]:
     return best.get("url")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# COBALT API — Reliable cloud-friendly YouTube proxy (no auth needed)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional[str]:
+    """Get stream URL via Cobalt API. Works reliably on cloud servers."""
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    for instance in _COBALT_INSTANCES:
+        try:
+            payload = {
+                "url": yt_url,
+                "downloadMode": "audio" if audio_only else "auto",
+                "audioFormat": "opus",
+                "youtubeVideoCodec": "h264",
+                "videoQuality": "720",
+            }
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": _PROXY_HEADERS["User-Agent"],
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{instance}/",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        stream_url = data.get("url")
+                        if stream_url:
+                            LOG.info("Cobalt stream obtained from %s for %s (audio=%s)",
+                                     instance, video_id, audio_only)
+                            return stream_url
+                        # Cobalt may return a picker for videos with separate streams
+                        picker = data.get("picker")
+                        if picker and isinstance(picker, list):
+                            for p_item in picker:
+                                if audio_only and p_item.get("type") == "audio":
+                                    return p_item.get("url")
+                                if not audio_only and p_item.get("type") == "video":
+                                    return p_item.get("url")
+                            # Fallback: first item
+                            if picker:
+                                return picker[0].get("url")
+                    else:
+                        LOG.debug("Cobalt %s returned HTTP %d for %s",
+                                  instance, resp.status, video_id)
+        except Exception as e:
+            LOG.debug("Cobalt %s failed for %s: %s", instance, video_id, e)
+            continue
+    return None
+
+
 def _best_invidious_video_url(data: dict) -> Optional[str]:
     """Pick best video URL from Invidious response."""
     formats = data.get("formatStreams", [])
@@ -230,59 +292,78 @@ def _invidious_video_info(data: dict, video_id: str) -> dict:
 
 _INNERTUBE_PLAYER_URL = "https://www.youtube.com/youtubei/v1/player"
 
-# Mobile/TV clients that return direct (non-cipher) stream URLs
+# Mobile/TV/Web clients that return direct (non-cipher) stream URLs
+# Updated May 2026 with latest client versions to avoid 403/bot detection
 _PLAYER_CLIENTS = [
     {
-        "name": "ANDROID_MUSIC",
+        "name": "IOS_MUSIC",
         "context": {
             "client": {
-                "clientName": "ANDROID_MUSIC",
-                "clientVersion": "7.27.52",
-                "androidSdkVersion": 30,
+                "clientName": "IOS_MUSIC",
+                "clientVersion": "7.36.1",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
                 "hl": "en",
                 "gl": "US",
-                "osName": "Android",
-                "osVersion": "11",
+                "osName": "iOS",
+                "osVersion": "18.2",
                 "platform": "MOBILE",
             }
         },
-        "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-        "ua": "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip",
+        "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
+        "ua": "com.google.ios.youtubemusic/7.36.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X)",
     },
     {
-        "name": "ANDROID",
+        "name": "ANDROID_VR",
         "context": {
             "client": {
-                "clientName": "ANDROID",
-                "clientVersion": "19.44.38",
-                "androidSdkVersion": 30,
+                "clientName": "ANDROID_VR",
+                "clientVersion": "1.62.27",
+                "androidSdkVersion": 34,
                 "hl": "en",
                 "gl": "US",
                 "osName": "Android",
-                "osVersion": "11",
+                "osVersion": "14",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-        "ua": "com.google.android.youtube/19.44.38 (Linux; U; Android 11) gzip",
+        "ua": "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 14) gzip",
     },
     {
         "name": "IOS",
         "context": {
             "client": {
                 "clientName": "IOS",
-                "clientVersion": "19.29.1",
+                "clientVersion": "20.05.1",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
-                "osVersion": "17.5.1",
+                "osVersion": "18.2",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-        "ua": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)",
+        "ua": "com.google.ios.youtube/20.05.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X)",
+    },
+    {
+        "name": "ANDROID_MUSIC",
+        "context": {
+            "client": {
+                "clientName": "ANDROID_MUSIC",
+                "clientVersion": "7.31.52",
+                "androidSdkVersion": 34,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "14",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
+        "ua": "com.google.android.apps.youtube.music/7.31.52 (Linux; U; Android 14) gzip",
     },
     {
         "name": "TV_EMBEDDED",
@@ -296,7 +377,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-        "ua": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.5)",
+        "ua": "Mozilla/5.0 (SMART-TV; Linux; Tizen 7.0)",
         "embed": True,
     },
 ]
@@ -505,16 +586,17 @@ def _get_cookie() -> Optional[str]:
 
 # ── yt-dlp player client rotation ────────────────────────────────────────────
 # YouTube aggressively blocks certain clients on cloud IPs.
-# Valid clients (yt-dlp 2026.03): web, web_safari, web_embedded, web_music,
-#   web_creator, android, android_vr, ios, mweb, tv, tv_downgraded, tv_simply
-# Order: authed-friendly first, then unauthed fallbacks.
+# Updated May 2026 — prioritize clients that work on Heroku/cloud.
+# Valid clients (yt-dlp 2026.x): web, web_safari, web_embedded, web_music,
+#   web_creator, android, android_vr, ios, ios_music, mweb, tv, tv_embedded
 _CLIENT_COMBOS: list[list[str]] = [
-    ["tv_downgraded", "web_safari"],   # yt-dlp default for authed users
-    ["android_vr", "web_safari"],      # yt-dlp default for unauthed
+    ["ios_music"],                     # Best for cloud — rarely blocked
+    ["android_vr"],                    # VR client — low detection rate
     ["ios"],                           # iOS client — good for music
-    ["web_music"],                     # YouTube Music client
-    ["tv_simply"],                     # Simple TV client
+    ["web_music"],                     # YouTube Music web client
+    ["tv_embedded"],                   # TV embedded player
     ["mweb"],                          # Mobile web fallback
+    ["web_safari"],                    # Safari web client
 ]
 
 
@@ -756,7 +838,7 @@ def _ytdlp_search_sync(query: str, max_results: int = 1) -> Optional[dict]:
 async def get_audio_stream_url(url: str) -> Optional[str]:
     """Extract direct audio stream URL (no download).
 
-    Priority: Innertube Player API -> Piped -> Invidious -> yt-dlp.
+    Priority: Innertube Player API -> Cobalt -> Piped -> Invidious -> yt-dlp.
     """
     video_id = _extract_video_id(url)
 
@@ -772,7 +854,16 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Innertube audio failed for %s", video_id)
 
-        # Try 2: Piped proxy
+        # Try 2: Cobalt API (reliable on cloud servers)
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=True)
+            if stream_url:
+                LOG.info("Audio stream via Cobalt for %s", video_id)
+                return stream_url
+        except Exception:
+            LOG.debug("Cobalt audio failed for %s", video_id)
+
+        # Try 3: Piped proxy
         try:
             data = await _piped_get_streams(video_id)
             if data:
@@ -783,7 +874,7 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Piped audio failed for %s", video_id)
 
-        # Try 3: Invidious proxy
+        # Try 4: Invidious proxy
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -794,7 +885,7 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious audio failed for %s", video_id)
 
-    # Try 4: yt-dlp (last resort)
+    # Try 5: yt-dlp (last resort)
     LOG.info("All direct APIs failed, trying yt-dlp for audio: %s", url)
     loop = asyncio.get_running_loop()
     try:
@@ -809,7 +900,7 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
 async def get_video_stream_url(url: str) -> Optional[str]:
     """Extract direct video stream URL (no download).
 
-    Priority: Innertube Player API -> Piped -> Invidious -> yt-dlp.
+    Priority: Innertube Player API -> Cobalt -> Piped -> Invidious -> yt-dlp.
     """
     video_id = _extract_video_id(url)
 
@@ -825,7 +916,16 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Innertube video failed for %s", video_id)
 
-        # Try 2: Piped proxy
+        # Try 2: Cobalt API (reliable on cloud servers)
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=False)
+            if stream_url:
+                LOG.info("Video stream via Cobalt for %s", video_id)
+                return stream_url
+        except Exception:
+            LOG.debug("Cobalt video failed for %s", video_id)
+
+        # Try 3: Piped proxy
         try:
             data = await _piped_get_streams(video_id)
             if data:
@@ -836,7 +936,7 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Piped video failed for %s", video_id)
 
-        # Try 3: Invidious proxy
+        # Try 4: Invidious proxy
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -937,9 +1037,9 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     import yt_dlp
 
     if audio_only:
-        fmt = "ba/b"  # most permissive: best audio, fallback to best anything
+        fmt = "ba*/b"  # most permissive: best audio (any), fallback to best anything
     else:
-        fmt = "bv*[height<=720]+ba/b[height<=720]/b"  # best video+audio, fallback
+        fmt = "bv*[height<=720]+ba*/bv*+ba*/b"  # very permissive video+audio
 
     last_err = None
     for combo in _CLIENT_COMBOS:
@@ -1009,7 +1109,7 @@ async def _piped_or_invidious_video(video_id: str) -> Optional[str]:
 
 
 async def download_audio(url: str) -> Optional[str]:
-    """Download audio. Tries Innertube/Piped stream + download, yt-dlp fallback."""
+    """Download audio. Tries Innertube/Cobalt/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
     if video_id:
@@ -1027,7 +1127,19 @@ async def download_audio(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Innertube audio download failed for %s", video_id)
 
-        # Try 2: Piped/Invidious stream URL + download
+        # Try 2: Cobalt API -> download stream
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=True)
+            if stream_url:
+                filepath = os.path.join(_DOWNLOADS, f"{video_id}_cobalt.opus")
+                downloaded = await _download_stream(stream_url, filepath)
+                if downloaded:
+                    LOG.info("Audio downloaded via Cobalt for %s", video_id)
+                    return downloaded
+        except Exception:
+            LOG.debug("Cobalt audio download failed for %s", video_id)
+
+        # Try 3: Piped/Invidious stream URL + download
         try:
             stream_url = await _piped_or_invidious_audio(video_id)
             if stream_url:
@@ -1043,7 +1155,7 @@ async def download_audio(url: str) -> Optional[str]:
     LOG.info("Direct download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "ba/b",
+        "format": "ba*/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
         "overwrites": False,
     }
@@ -1051,7 +1163,7 @@ async def download_audio(url: str) -> Optional[str]:
 
 
 async def download_video(url: str) -> Optional[str]:
-    """Download video. Tries Innertube/Piped stream + download, yt-dlp fallback."""
+    """Download video. Tries Innertube/Cobalt/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
     if video_id:
@@ -1069,7 +1181,19 @@ async def download_video(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Innertube video download failed for %s", video_id)
 
-        # Try 2: Piped/Invidious stream URL + download
+        # Try 2: Cobalt API -> download stream
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=False)
+            if stream_url:
+                filepath = os.path.join(_DOWNLOADS, f"{video_id}_cobalt_video.mp4")
+                downloaded = await _download_stream(stream_url, filepath)
+                if downloaded:
+                    LOG.info("Video downloaded via Cobalt for %s", video_id)
+                    return downloaded
+        except Exception:
+            LOG.debug("Cobalt video download failed for %s", video_id)
+
+        # Try 3: Piped/Invidious stream URL + download
         try:
             stream_url = await _piped_or_invidious_video(video_id)
             if stream_url:
@@ -1085,7 +1209,7 @@ async def download_video(url: str) -> Optional[str]:
     LOG.info("Direct download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "bv*[height<=720]+ba/b[height<=720]/b",
+        "format": "bv*[height<=720]+ba*/bv*+ba*/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "merge_output_format": "mp4",
         "overwrites": False,
