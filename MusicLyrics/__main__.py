@@ -8,6 +8,8 @@ import signal
 import sys
 from pathlib import Path
 
+from pyrogram.errors import FloodWait
+
 from config import Config
 from MusicLyrics import bot, userbot, pytgcalls, __version__
 
@@ -69,20 +71,44 @@ async def _send_startup_message():
             photo=Config.BRAND_PHOTO_2,
             caption=f"**MusicLyrics v{__version__}** is now online.",
         )
+    except FloodWait as e:
+        LOG.warning("FloodWait on startup message: waiting %d seconds.", e.value)
+        await asyncio.sleep(e.value + 2)
     except Exception:
         LOG.exception("Could not send startup message to LOG_GROUP_ID.")
+
+
+async def _start_with_retry(client, name, max_retries=5):
+    """Start a Pyrogram client with FloodWait retry handling."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            await client.start()
+            LOG.info("%s client started.", name)
+            return
+        except FloodWait as e:
+            wait = e.value
+            LOG.warning(
+                "%s: FloodWait — Telegram requires %d seconds wait. "
+                "Attempt %d/%d. Waiting...",
+                name, wait, attempt, max_retries,
+            )
+            await asyncio.sleep(wait + 2)
+        except Exception as e:
+            LOG.exception("%s: Failed to start (attempt %d/%d): %s", name, attempt, max_retries, e)
+            if attempt < max_retries:
+                await asyncio.sleep(10)
+            else:
+                raise
 
 
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
     _load_plugins()
 
-    await bot.start()
-    LOG.info("Bot client started.")
+    await _start_with_retry(bot, "Bot")
 
     if Config.STRING_SESSION and userbot and pytgcalls:
-        await userbot.start()
-        LOG.info("Userbot client started.")
+        await _start_with_retry(userbot, "Userbot")
         await pytgcalls.start()
         LOG.info("PyTgCalls started.")
 
