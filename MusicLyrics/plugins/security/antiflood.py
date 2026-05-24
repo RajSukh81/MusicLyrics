@@ -44,7 +44,10 @@ async def _get_flood_settings(chat_id: int) -> tuple[int, str]:
     cached = _settings_cache.get(chat_id)
     if cached and now - cached[3] < _SETTINGS_TTL:
         return cached[1], cached[2]
-    doc = await get_chat(chat_id)
+    try:
+        doc = await get_chat(chat_id)
+    except Exception:
+        doc = None  # MongoDB down — use defaults
     if doc:
         limit = doc.get("flood_limit", DEFAULT_FLOOD_LIMIT)
         mode = doc.get("flood_mode", "mute")
@@ -99,8 +102,11 @@ async def flood_watcher(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    if not await _is_antiflood_on(chat_id):
-        return
+    try:
+        if not await _is_antiflood_on(chat_id):
+            return
+    except Exception:
+        return  # MongoDB down — skip flood check, don't block
 
     # Skip admins / sudo
     if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:

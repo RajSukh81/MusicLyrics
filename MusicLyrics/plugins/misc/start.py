@@ -12,6 +12,10 @@ from MusicLyrics.bot import bot
 from config import Config
 from MusicLyrics.mongo.users_db import add_user
 
+import logging
+
+_LOG = logging.getLogger(__name__)
+
 
 def _start_keyboard():
     """Build the start menu inline keyboard."""
@@ -143,11 +147,14 @@ HELP_MAIN_TEXT = (
 async def start_cmd(client, message: Message):
     """Handle /start command."""
     if message.from_user:
-        await add_user(
-            message.from_user.id,
-            message.from_user.first_name or "",
-            message.from_user.username or "",
-        )
+        try:
+            await add_user(
+                message.from_user.id,
+                message.from_user.first_name or "",
+                message.from_user.username or "",
+            )
+        except Exception:
+            _LOG.warning("Could not save user to DB (MongoDB may be down).")
 
     mention = message.from_user.mention if message.from_user else "User"
 

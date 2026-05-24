@@ -78,7 +78,10 @@ async def gban_watcher(client: Client, message: Message):
         return
     user_id = message.from_user.id
 
-    gban = await _get_gban(user_id)
+    try:
+        gban = await _get_gban(user_id)
+    except Exception:
+        return  # MongoDB down — skip gban check, don't block
     if not gban:
         return
 
@@ -103,8 +106,11 @@ async def spam_watcher(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    if not await _is_antispam_on(chat_id):
-        return
+    try:
+        if not await _is_antispam_on(chat_id):
+            return
+    except Exception:
+        return  # MongoDB down — skip spam check, don't block
 
     # Skip admins / sudo
     if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
