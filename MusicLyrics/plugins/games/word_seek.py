@@ -153,7 +153,7 @@ async def hint_cmd(_, message: Message):
         await message.reply("💡 সব অক্ষর ইতিমধ্যে জানা! / All letters already revealed!")
 
 
-@bot.on_message(filters.text & filters.group & ~filters.command([]))
+@bot.on_message(filters.text & filters.group & ~filters.command, group=12)
 async def word_seek_guess(_, message: Message):
     chat_id = message.chat.id
     game = active_games.get(chat_id)

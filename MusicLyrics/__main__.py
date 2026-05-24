@@ -283,7 +283,7 @@ def _setup_catchall_handler():
 async def _delete_webhook():
     """Explicitly delete any Telegram webhook and drop pending updates."""
     url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
-    params = {"drop_pending_updates": "true"}
+    params = {"drop_pending_updates": True}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -359,8 +359,20 @@ async def main():
     await _start_with_retry(bot, "Bot")
 
     # Double-check: delete webhook again AFTER bot.start() in case
-    # Pyrogram re-set it during handshake
-    await _delete_webhook()
+    # Pyrogram re-set it during handshake -- but do NOT drop pending
+    # updates this time, as that would discard updates Pyrogram is
+    # already polling for and can desync the getUpdates offset.
+    url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json={"drop_pending_updates": False},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                result = await resp.json()
+                LOG.info("Post-start webhook delete: %s", result)
+    except Exception as e:
+        LOG.warning("Post-start webhook delete failed: %s", e)
 
     # Verify bot can receive updates
     bot_me = await bot.get_me()
