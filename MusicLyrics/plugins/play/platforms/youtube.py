@@ -279,14 +279,17 @@ def _get_cookie() -> Optional[str]:
 
 
 # ── yt-dlp player client rotation ────────────────────────────────────────────
-# YouTube aggressively blocks "web" and "mweb" on cloud IPs.
-# We try multiple client combos in order of reliability.
+# YouTube aggressively blocks certain clients on cloud IPs.
+# Valid clients (yt-dlp 2026.03): web, web_safari, web_embedded, web_music,
+#   web_creator, android, android_vr, ios, mweb, tv, tv_downgraded, tv_simply
+# Order: authed-friendly first, then unauthed fallbacks.
 _CLIENT_COMBOS: list[list[str]] = [
-    ["default"],
-    ["ios"],
-    ["android_vr"],
-    ["tv_embedded"],
-    ["web"],
+    ["tv_downgraded", "web_safari"],   # yt-dlp default for authed users
+    ["android_vr", "web_safari"],      # yt-dlp default for unauthed
+    ["ios"],                           # iOS client — good for music
+    ["web_music"],                     # YouTube Music client
+    ["tv_simply"],                     # Simple TV client
+    ["mweb"],                          # Mobile web fallback
 ]
 
 
@@ -679,9 +682,9 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     import yt_dlp
 
     if audio_only:
-        fmt = "bestaudio/best"
+        fmt = "ba/b"  # most permissive: best audio, fallback to best anything
     else:
-        fmt = "best[height<=?720]/best"
+        fmt = "bv*[height<=720]+ba/b[height<=720]/b"  # best video+audio, fallback
 
     last_err = None
     for combo in _CLIENT_COMBOS:
@@ -728,14 +731,9 @@ async def download_audio(url: str) -> Optional[str]:
     LOG.info("Proxy download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "bestaudio/best",
+        "format": "ba/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
         "overwrites": False,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "opus",
-            "preferredquality": "128",
-        }],
     }
     return await _run_ytdlp(url, opts)
 
@@ -761,7 +759,7 @@ async def download_video(url: str) -> Optional[str]:
     LOG.info("Proxy download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "bestvideo[height<=?720]+bestaudio/best[height<=?720]/best",
+        "format": "bv*[height<=720]+ba/b[height<=720]/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "merge_output_format": "mp4",
         "overwrites": False,
