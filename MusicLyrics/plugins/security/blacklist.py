@@ -26,6 +26,26 @@ _offender_count: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int
 OFFENDER_MUTE_THRESHOLD = 3
 MUTE_DURATION = 600  # 10 minutes
 
+# ── Admin cache to avoid hitting Telegram API on every message ────────────
+_admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
+_ADMIN_TTL = 120  # seconds
+
+
+async def _is_admin_cached(client: Client, chat_id: int, user_id: int) -> bool:
+    """Check if user is admin with caching to avoid rate limits."""
+    now = time.time()
+    key = (chat_id, user_id)
+    cached = _admin_cache.get(key)
+    if cached and now - cached[1] < _ADMIN_TTL:
+        return cached[0]
+    try:
+        member = await client.get_chat_member(chat_id, user_id)
+        is_admin = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        is_admin = False
+    _admin_cache[key] = (is_admin, now)
+    return is_admin
+
 
 # ── Blacklist watcher ──────────────────────────────────────────────────────
 
@@ -40,12 +60,8 @@ async def blacklist_watcher(client: Client, message: Message):
     # Skip admins / sudo
     if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
         return
-    try:
-        member = await client.get_chat_member(chat_id, user_id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
-    except Exception:
-        pass
+    if await _is_admin_cached(client, chat_id, user_id):
+        return
 
     bl_words = await get_blacklist(chat_id)
     if not bl_words:

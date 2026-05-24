@@ -10,6 +10,18 @@ from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus, ChatType
 
 from config import Config
+from MusicLyrics.mongo.sudo_db import is_sudo
+
+
+async def _is_sudo_user(user_id: int) -> bool:
+    """Check if user is sudo (from config + MongoDB)."""
+    if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
+        return True
+    # Also check MongoDB sudo list
+    try:
+        return await is_sudo(user_id)
+    except Exception:
+        return False
 
 
 def admin_required(func: Callable):
@@ -24,7 +36,7 @@ def admin_required(func: Callable):
         user_id = message.from_user.id if message.from_user else 0
 
         # Sudo / owner bypass
-        if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
+        if await _is_sudo_user(user_id):
             return await func(client, message)
 
         try:
@@ -56,7 +68,7 @@ def sudo_required(func: Callable):
     async def wrapper(client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else 0
 
-        if user_id not in Config.SUDO_USERS and user_id != Config.OWNER_ID:
+        if not await _is_sudo_user(user_id):
             await message.reply_text(
                 "❌ এই কমান্ড শুধুমাত্র sudo ইউজারদের জন্য।\n"
                 "This command is for sudo users only."

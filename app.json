@@ -97,7 +97,17 @@
       "value": ""
     },
     "YT_PO_TOKEN": {
-      "description": "YouTube PO (Proof of Origin) token for additional bot-detection bypass. Format: visitor_data=TOKEN (optional, advanced).",
+      "description": "YouTube PO (Proof of Origin) token for additional bot-detection bypass. Format: web+VISITOR_DATA:PO_TOKEN (optional, advanced).",
+      "required": false,
+      "value": ""
+    },
+    "YT_VISITOR_DATA": {
+      "description": "YouTube visitor data string (used with PO token). Optional, advanced.",
+      "required": false,
+      "value": ""
+    },
+    "AI_API_KEY": {
+      "description": "Google Gemini API key for AI chat features (optional). Get from https://aistudio.google.com/apikey",
       "required": false,
       "value": ""
     }

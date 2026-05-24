@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -48,7 +49,8 @@ async def get_spotify_track(url: str) -> Optional[dict]:
     if not sp:
         return _fallback_parse(url)
     try:
-        track = sp.track(url)
+        loop = asyncio.get_running_loop()
+        track = await loop.run_in_executor(None, sp.track, url)
         title = track["name"]
         artists = ", ".join(a["name"] for a in track["artists"])
         duration = track["duration_ms"] // 1000
@@ -76,9 +78,10 @@ async def get_spotify_playlist(url: str) -> list[dict]:
     try:
         stype = _spotify_type(url)
         tracks: list[dict] = []
+        loop = asyncio.get_running_loop()
 
         if stype == "playlist":
-            results = sp.playlist_tracks(url)
+            results = await loop.run_in_executor(None, sp.playlist_tracks, url)
             while results:
                 for item in results["items"]:
                     t = item.get("track")
@@ -92,11 +95,11 @@ async def get_spotify_playlist(url: str) -> list[dict]:
                         "duration": t["duration_ms"] // 1000,
                         "query": f"{title} {artists}",
                     })
-                results = sp.next(results) if results.get("next") else None
+                results = await loop.run_in_executor(None, sp.next, results) if results.get("next") else None
 
         elif stype == "album":
-            results = sp.album_tracks(url)
-            album = sp.album(url)
+            results = await loop.run_in_executor(None, sp.album_tracks, url)
+            album = await loop.run_in_executor(None, sp.album, url)
             while results:
                 for t in results["items"]:
                     title = t["name"]
@@ -107,7 +110,7 @@ async def get_spotify_playlist(url: str) -> list[dict]:
                         "duration": t["duration_ms"] // 1000,
                         "query": f"{title} {artists}",
                     })
-                results = sp.next(results) if results.get("next") else None
+                results = await loop.run_in_executor(None, sp.next, results) if results.get("next") else None
 
         return tracks
     except Exception:

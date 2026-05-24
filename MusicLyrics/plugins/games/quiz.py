@@ -184,11 +184,16 @@ async def _quiz_timeout(quiz_id, delay):
             pass
 
 
-@bot.on_callback_query(filters.regex(r"^quiz_(\d+)_(\d+)_(\d)$"))
+@bot.on_callback_query(filters.regex(r"^quiz_-?\d+_\d+_\d$"))
 async def quiz_answer(_, cq: CallbackQuery):
-    parts = cq.data.split("_")
-    quiz_id = f"{parts[1]}_{parts[2]}"
-    chosen = int(parts[3])
+    # callback_data format: quiz_{chat_id}_{msg_id}_{chosen}
+    # chat_id can be negative for groups (e.g. -1001234567890)
+    data = cq.data
+    # Extract chosen (last character after final _)
+    last_underscore = data.rfind("_")
+    chosen = int(data[last_underscore + 1:])
+    # Extract quiz_id (everything between "quiz_" and the last _)
+    quiz_id = data[5:last_underscore]
 
     quiz = active_quizzes.get(quiz_id)
     if not quiz:

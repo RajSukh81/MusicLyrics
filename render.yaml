@@ -37,3 +37,7 @@ services:
         sync: false
       - key: YT_PO_TOKEN
         sync: false
+      - key: YT_VISITOR_DATA
+        sync: false
+      - key: AI_API_KEY
+        sync: false

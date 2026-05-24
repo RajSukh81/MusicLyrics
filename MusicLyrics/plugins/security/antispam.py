@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatType, ChatMemberStatus
 
 from MusicLyrics.bot import bot
 from MusicLyrics.mongo.db import db
@@ -30,6 +30,26 @@ SPAM_WINDOW = 10        # seconds
 SPAM_MSG_LIMIT = 7      # max messages in window
 SPAM_REPEAT_LIMIT = 4   # max identical messages in window
 MUTE_DURATION = 300      # 5 minutes
+
+# ── Admin cache ────────────────────────────────────────────────────────────
+_admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
+_ADMIN_TTL = 120  # seconds
+
+
+async def _is_admin_cached(client: Client, chat_id: int, user_id: int) -> bool:
+    """Check if user is admin with caching to avoid rate limits."""
+    now = time.time()
+    key = (chat_id, user_id)
+    cached = _admin_cache.get(key)
+    if cached and now - cached[1] < _ADMIN_TTL:
+        return cached[0]
+    try:
+        member = await client.get_chat_member(chat_id, user_id)
+        is_admin = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        is_admin = False
+    _admin_cache[key] = (is_admin, now)
+    return is_admin
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -115,13 +135,8 @@ async def spam_watcher(client: Client, message: Message):
     # Skip admins / sudo
     if user_id in Config.SUDO_USERS or user_id == Config.OWNER_ID:
         return
-    try:
-        member = await client.get_chat_member(chat_id, user_id)
-        from pyrogram.enums import ChatMemberStatus
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
-    except Exception:
-        pass
+    if await _is_admin_cached(client, chat_id, user_id):
+        return
 
     text = message.text or message.caption or ""
     if _is_spam(chat_id, user_id, text):

@@ -199,11 +199,14 @@ async def ttt_quit(_, cq: CallbackQuery):
     )
 
 
-@bot.on_callback_query(filters.regex(r"^ttt_(\d+_\d+)_(\d)$"))
+@bot.on_callback_query(filters.regex(r"^ttt_-?\d+_\d+_\d$"))
 async def ttt_move(_, cq: CallbackQuery):
-    parts = cq.data.split("_")
-    game_id = f"{parts[1]}_{parts[2]}"
-    idx = int(parts[3])
+    # callback_data format: ttt_{chat_id}_{msg_id}_{cell_idx}
+    # chat_id can be negative for groups
+    data = cq.data
+    last_underscore = data.rfind("_")
+    idx = int(data[last_underscore + 1:])
+    game_id = data[4:last_underscore]
 
     game = games.get(game_id)
     if not game:

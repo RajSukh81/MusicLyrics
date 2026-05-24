@@ -36,17 +36,22 @@ _cookies_loaded = False
 
 def _write_env_cookies():
     """Write cookies from COOKIES_TXT env var to a file (for cloud deploys
-    like Heroku where cookie files can't be committed to git)."""
+    like Heroku where cookie files can't be committed to git).
+
+    Supports both single-line (escaped \\n) and multi-line env var values.
+    Always rewrites the file to pick up env var changes on dyno restart.
+    """
     raw = os.environ.get("COOKIES_TXT", "").strip()
     if not raw:
         return
+    # Handle escaped newlines (common when setting env vars via CLI)
+    if "\\n" in raw and "\n" not in raw:
+        raw = raw.replace("\\n", "\n")
     env_cookie_path = os.path.join(_COOKIES_DIR, "_env_cookies.txt")
-    if os.path.exists(env_cookie_path):
-        return  # already written
     try:
         with open(env_cookie_path, "w") as fp:
             fp.write(raw)
-        LOG.info("Wrote COOKIES_TXT env var to %s", env_cookie_path)
+        LOG.info("Wrote COOKIES_TXT env var to %s (%d bytes)", env_cookie_path, len(raw))
     except Exception:
         LOG.exception("Failed to write COOKIES_TXT env var to file")
 
@@ -116,9 +121,15 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         },
     }
     # PO token support (if set via env var)
+    # Format: "web+VISITOR_DATA:PO_TOKEN" (yt-dlp 2024.09+ format)
     po_token = os.environ.get("YT_PO_TOKEN", "").strip()
     if po_token:
         opts["extractor_args"]["youtube"]["po_token"] = [po_token]
+
+    # Visitor data support (optional, used with PO token)
+    visitor_data = os.environ.get("YT_VISITOR_DATA", "").strip()
+    if visitor_data:
+        opts["extractor_args"]["youtube"]["visitor_data"] = [visitor_data]
 
     cookie = _get_cookie()
     if cookie:

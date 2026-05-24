@@ -32,8 +32,11 @@ _MAX_RECENT = 30
 _recent_replies: dict[int, deque] = {}
 
 # ── API rate limit tracking ───────────────────────────────────────────────────
-_api_cooldown_until: float = 0  # timestamp when cooldown expires
-_API_COOLDOWN_SECONDS = 60  # wait 60s after a 429 before retrying
+# Per-model cooldown: different models have different quotas
+_model_cooldown_until: dict[str, float] = {}  # model -> timestamp
+_API_COOLDOWN_SECONDS = 300  # wait 5 minutes after a 429 before retrying
+_API_COOLDOWN_BACKOFF = 2.0  # multiply cooldown on repeated 429s
+_model_cooldown_multiplier: dict[str, float] = {}  # model -> current multiplier
 
 
 def _get_history(chat_id: int) -> deque:
@@ -179,25 +182,22 @@ _GEMINI_MODELS = [
 async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
     """Get AI response — tries Gemini API with model fallback,
     then uses smart context-aware local replies."""
-    global _api_cooldown_until
 
     if not Config.AI_API_KEY:
         return _smart_reply(text, chat_id)
 
-    # Respect cooldown after 429
-    if time.time() < _api_cooldown_until:
-        LOG.debug("API in cooldown, using smart reply")
-        return _smart_reply(text, chat_id)
-
     history = _get_history(chat_id)
 
-    # Try each Gemini model
+    # Try each Gemini model (skip those in cooldown)
     for model in _GEMINI_MODELS:
+        if time.time() < _model_cooldown_until.get(model, 0):
+            LOG.debug("Model %s in cooldown, skipping", model)
+            continue
         result = await _try_gemini(model, text, chat_id, user_name, history)
         if result:
             return result
 
-    # All models failed, use smart reply
+    # All models failed or in cooldown, use smart reply
     return _smart_reply(text, chat_id)
 
 
@@ -206,12 +206,10 @@ async def _try_gemini(
     user_name: str, history: deque
 ) -> Optional[str]:
     """Try a single Gemini model. Returns reply or None."""
-    global _api_cooldown_until
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent"
-        f"?key={Config.AI_API_KEY}"
     )
 
     system_prompt = (
@@ -246,6 +244,7 @@ async def _try_gemini(
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=payload,
+                headers={"x-goog-api-key": Config.AI_API_KEY},
                 timeout=aiohttp.ClientTimeout(total=12),
             ) as resp:
                 if resp.status == 200:
@@ -260,11 +259,14 @@ async def _try_gemini(
                                 history.append(("model", reply))
                                 return reply
                 elif resp.status == 429:
-                    # Quota exceeded — set cooldown
-                    _api_cooldown_until = time.time() + _API_COOLDOWN_SECONDS
+                    # Quota exceeded — set per-model cooldown with backoff
+                    multiplier = _model_cooldown_multiplier.get(model, 1.0)
+                    cooldown = _API_COOLDOWN_SECONDS * multiplier
+                    _model_cooldown_until[model] = time.time() + cooldown
+                    _model_cooldown_multiplier[model] = min(multiplier * _API_COOLDOWN_BACKOFF, 16.0)
                     LOG.warning(
-                        "Gemini %s quota exceeded (429). Cooldown %ds.",
-                        model, _API_COOLDOWN_SECONDS,
+                        "Gemini %s quota exceeded (429). Cooldown %.0fs.",
+                        model, cooldown,
                     )
                     return None
                 else:

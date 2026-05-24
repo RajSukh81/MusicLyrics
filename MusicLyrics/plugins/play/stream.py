@@ -307,6 +307,11 @@ async def _on_stream_end(client, update):
             LOG.warning("Stream end event with unknown chat_id: %s", update)
             return
 
+    # Clean up the finished track's file (if it was a local download)
+    finished = await get_current(chat_id)
+    if finished and not finished.is_stream_url and finished.media_path:
+        cleanup(finished.media_path)
+
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
@@ -323,6 +328,23 @@ async def _on_stream_end(client, update):
 
     # Play next track
     try:
+        # Re-fetch stream URL if it was a stream URL (they expire)
+        if next_item.is_stream_url:
+            try:
+                from MusicLyrics.plugins.play.platforms.youtube import (
+                    get_audio_stream_url, get_video_stream_url, is_youtube_url
+                )
+                if is_youtube_url(next_item.url):
+                    if next_item.stream_type == "video":
+                        new_url = await get_video_stream_url(next_item.url)
+                    else:
+                        new_url = await get_audio_stream_url(next_item.url)
+                    if new_url:
+                        next_item.media_path = new_url
+                        LOG.info("Re-fetched stream URL for queued track: %s", next_item.title)
+            except Exception:
+                LOG.warning("Failed to re-fetch stream URL for: %s", next_item.title)
+
         if next_item.stream_type == "video":
             await stream_video(
                 chat_id, next_item.media_path,

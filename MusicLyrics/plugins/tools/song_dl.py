@@ -68,7 +68,7 @@ async def song_cmd(client, message: Message):
 
         title = info.get("title", "Unknown") if info else "Unknown"
         duration = info.get("duration", 0) if info else 0
-        performer = info.get("uploader", "Unknown") if info else "Unknown"
+        performer = info.get("channel", info.get("uploader", "Unknown")) if info else "Unknown"
 
         # Check file size (Telegram limit ~50MB for bots)
         file_size = os.path.getsize(path)
