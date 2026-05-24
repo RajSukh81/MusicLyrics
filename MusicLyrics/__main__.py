@@ -203,19 +203,29 @@ def _setup_event_logging():
         message.continue_propagation()
 
     # -- Log ALL commands used (group 98 = runs before most handlers) --
-    @bot.on_message(filters.command & filters.create(lambda _, __, m: not getattr(m, "edit_date", None)), group=98)
+    # Custom filter: message starts with "/" and is not edited
+    _any_cmd_not_edited = filters.create(
+        lambda _, __, m: (
+            bool(m.text and m.text.startswith("/"))
+            and not getattr(m, "edit_date", None)
+        ),
+        name="AnyCommandNotEdited",
+    )
+
+    @bot.on_message(_any_cmd_not_edited, group=98)
     async def log_all_commands(client, message: Message):
         """Log every command to LOG_GROUP_ID for monitoring."""
         user = message.from_user
         if not user:
             message.continue_propagation()
             return
-        cmd = message.command[0] if message.command else "?"
-        args = " ".join(message.command[1:])[:80] if len(message.command) > 1 else ""
+        cmd = message.text.split()[0].split("@")[0]
+        args_parts = message.text.split(None, 1)
+        args = args_parts[1][:80] if len(args_parts) > 1 else ""
         chat_title = message.chat.title or "Private"
         text = (
             f"**Command Log**\n\n"
-            f"**Cmd:** `/{cmd}` {f'`{args}`' if args else ''}\n"
+            f"**Cmd:** `{cmd}` {f'`{args}`' if args else ''}\n"
             f"**User:** {user.mention} (`{user.id}`)\n"
             f"**Chat:** {chat_title} (`{message.chat.id}`)"
         )
