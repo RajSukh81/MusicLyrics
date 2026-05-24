@@ -107,16 +107,26 @@ async def main():
 
     # Graceful shutdown
     LOG.info("Shutting down MusicLyrics...")
-    if Config.STRING_SESSION and pytgcalls:
-        # py-tgcalls 2.x has no stop(); leave all active calls instead
-        for chat_id in list(pytgcalls.calls):
+    try:
+        if Config.STRING_SESSION and pytgcalls:
+            # py-tgcalls 2.x: pytgcalls.calls may be a coroutine or dict
+            # depending on version; handle both safely
             try:
-                await pytgcalls.leave_call(chat_id)
+                calls = pytgcalls.calls
+                if asyncio.iscoroutine(calls):
+                    calls = await calls
+                for chat_id in list(calls):
+                    try:
+                        await pytgcalls.leave_call(chat_id)
+                    except Exception:
+                        pass
             except Exception:
-                pass
-    if Config.STRING_SESSION and userbot:
-        await userbot.stop()
-    await bot.stop()
+                LOG.warning("Could not leave active calls during shutdown.")
+        if Config.STRING_SESSION and userbot:
+            await userbot.stop()
+        await bot.stop()
+    except Exception:
+        LOG.exception("Error during shutdown.")
     LOG.info("Goodbye.")
 
 
