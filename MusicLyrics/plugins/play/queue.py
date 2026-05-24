@@ -17,13 +17,19 @@ class QueueItem:
 
     title: str
     url: str
-    file_path: str
+    media_path: str  # local file path OR direct stream URL
     duration: int  # seconds
     requester: str  # user mention or name
     requester_id: int
     thumbnail: str = ""
     stream_type: str = "audio"  # "audio" or "video"
     platform: str = "youtube"
+    is_stream_url: bool = False  # True if media_path is a URL
+
+    # Backward compatibility alias
+    @property
+    def file_path(self) -> str:
+        return self.media_path
 
 
 @dataclass

@@ -53,3 +53,7 @@ docker-compose.override.yml
 *.temp
 downloads/
 raw_files/
+
+# YouTube cookies (sensitive)
+cookies/*.txt
+!cookies/README.md

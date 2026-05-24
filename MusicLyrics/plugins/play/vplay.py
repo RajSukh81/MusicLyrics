@@ -1,4 +1,8 @@
-"""Handler for /vplay <query|url> — video playback in voice chat."""
+"""Handler for /vplay <query|url> — video playback in voice chat.
+
+Uses stream URL extraction as primary method (no download needed),
+with download as fallback. Based on patterns from YukkiMusicBot.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from MusicLyrics.plugins.play.queue import (
 from MusicLyrics.plugins.play.stream import stream_video, is_active
 from MusicLyrics.plugins.play.platforms.youtube import (
     search_youtube,
+    get_video_stream_url,
     download_video,
     get_video_info,
     is_youtube_url,
@@ -61,22 +66,44 @@ def _vcontrol_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+async def _get_video_media(url: str) -> tuple[str, bool]:
+    """Get media path for video playback.
+
+    Returns (media_path, is_stream_url).
+    Tries stream URL first, falls back to download.
+    """
+    # Try 1: Get stream URL (no download needed — fast)
+    stream_url = await get_video_stream_url(url)
+    if stream_url:
+        LOG.info("Using video stream URL for: %s", url)
+        return stream_url, True
+
+    # Try 2: Download to disk (fallback)
+    LOG.info("Video stream URL failed, downloading: %s", url)
+    filepath = await download_video(url)
+    if filepath and os.path.isfile(filepath):
+        return filepath, False
+
+    return "", False
+
+
 async def _resolve_video(query: str, platform: str):
-    """Resolve query into (info_dict, file_path) for video streaming."""
+    """Resolve query into (info_dict, media_path, is_stream_url) for video."""
 
     # YouTube URL
     if platform == "youtube":
         info = await get_video_info(query)
         if not info:
-            raise ValueError("YouTube link থেকে তথ্য পাওয়া যায়নি।")
-        if info["duration"] > Config.DURATION_LIMIT_MIN * 60:
+            info = {"title": "YouTube Video", "url": query,
+                    "duration": 0, "thumbnail": "", "channel": ""}
+        if info["duration"] > Config.DURATION_LIMIT_MIN * 60 and info["duration"] > 0:
             raise ValueError(
                 f"ভিডিওটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি।"
             )
-        filepath = await download_video(query)
-        if not filepath:
-            raise ValueError("Video download ব্যর্থ হয়েছে।")
-        return info, filepath
+        media_path, is_stream = await _get_video_media(query)
+        if not media_path:
+            raise ValueError("YouTube থেকে video পাওয়া যায়নি।")
+        return info, media_path, is_stream
 
     # Spotify — search YT for video
     if platform == "spotify":
@@ -86,10 +113,10 @@ async def _resolve_video(query: str, platform: str):
         yt = await search_youtube(track["query"])
         if not yt:
             raise ValueError("YouTube-এ video পাওয়া যায়নি।")
-        filepath = await download_video(yt["url"])
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে।")
-        return {**yt, "platform": "spotify"}, filepath
+        media_path, is_stream = await _get_video_media(yt["url"])
+        if not media_path:
+            raise ValueError("Video stream পাওয়া যায়নি।")
+        return {**yt, "platform": "spotify"}, media_path, is_stream
 
     # Apple Music — search YT for video
     if platform == "apple_music":
@@ -99,20 +126,20 @@ async def _resolve_video(query: str, platform: str):
         yt = await search_youtube(track["query"])
         if not yt:
             raise ValueError("YouTube-এ video পাওয়া যায়নি।")
-        filepath = await download_video(yt["url"])
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে।")
-        return {**yt, "platform": "apple_music"}, filepath
+        media_path, is_stream = await _get_video_media(yt["url"])
+        if not media_path:
+            raise ValueError("Video stream পাওয়া যায়নি।")
+        return {**yt, "platform": "apple_music"}, media_path, is_stream
 
     # JioSaavn — video not available, search YT
     if platform == "jiosaavn":
         yt = await search_youtube(query)
         if not yt:
             raise ValueError("JioSaavn video সমর্থন করে না এবং YouTube-এও পাওয়া যায়নি।")
-        filepath = await download_video(yt["url"])
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে।")
-        return yt, filepath
+        media_path, is_stream = await _get_video_media(yt["url"])
+        if not media_path:
+            raise ValueError("Video stream পাওয়া যায়নি।")
+        return yt, media_path, is_stream
 
     # Direct URL
     if platform == "direct_url":
@@ -120,23 +147,23 @@ async def _resolve_video(query: str, platform: str):
         if not info:
             info = {"title": "Direct Video", "url": query,
                     "duration": 0, "thumbnail": "", "channel": ""}
-        filepath = await download_video(query)
-        if not filepath:
-            raise ValueError("URL থেকে video download করা যায়নি।")
-        return info, filepath
+        media_path, is_stream = await _get_video_media(query)
+        if not media_path:
+            raise ValueError("URL থেকে video পাওয়া যায়নি।")
+        return info, media_path, is_stream
 
     # Plain text query
     yt = await search_youtube(query)
     if not yt:
         raise ValueError("কোনো result পাওয়া যায়নি।")
-    if yt["duration"] > Config.DURATION_LIMIT_MIN * 60:
+    if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
         raise ValueError(
             f"ভিডিওটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি।"
         )
-    filepath = await download_video(yt["url"])
-    if not filepath:
-        raise ValueError("Video download ব্যর্থ হয়েছে।")
-    return yt, filepath
+    media_path, is_stream = await _get_video_media(yt["url"])
+    if not media_path:
+        raise ValueError("Video stream পাওয়া যায়নি।")
+    return yt, media_path, is_stream
 
 
 @bot.on_message(filters.command(["vplay", "vp"]) & not_edited)
@@ -168,7 +195,7 @@ async def vplay_command(client: Client, message: Message):
     platform = _detect_platform(query)
 
     try:
-        info, filepath = await _resolve_video(query, platform)
+        info, media_path, is_stream = await _resolve_video(query, platform)
     except ValueError as exc:
         await status_msg.edit_text(f"❌ **Error:** {exc}")
         return
@@ -177,13 +204,6 @@ async def vplay_command(client: Client, message: Message):
         await status_msg.edit_text(
             f"❌ কিছু একটা সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।\n"
             f"**Details:** `{type(exc).__name__}: {str(exc)[:200]}`"
-        )
-        return
-
-    if not filepath or not os.path.isfile(filepath):
-        await status_msg.edit_text(
-            "❌ ভিডিও ডাউনলোড হয়েছে কিন্তু ফাইল পাওয়া যায়নি।\n"
-            "আবার চেষ্টা করুন।"
         )
         return
 
@@ -196,13 +216,14 @@ async def vplay_command(client: Client, message: Message):
     item = QueueItem(
         title=title,
         url=url,
-        file_path=filepath,
+        media_path=media_path,
         duration=duration,
         requester=requester,
         requester_id=requester_id,
         thumbnail=thumbnail,
         stream_type="video",
         platform=platform if platform != "query" else "youtube",
+        is_stream_url=is_stream,
     )
 
     position = await add_to_queue(chat_id, item)
@@ -220,15 +241,15 @@ async def vplay_command(client: Client, message: Message):
 
     try:
         await stream_video(
-            chat_id, filepath,
+            chat_id, media_path,
             title=title, duration=duration,
             thumbnail=thumbnail, requester=requester,
         )
-    except FileNotFoundError as exc:
-        LOG.exception("File not found for video stream in %s", chat_id)
+    except FileNotFoundError:
+        LOG.exception("Media not found for video stream in %s", chat_id)
         await status_msg.edit_text(
-            f"❌ ডাউনলোড করা ভিডিও ফাইল পাওয়া যায়নি।\n"
-            f"আবার `/vplay` দিয়ে চেষ্টা করুন।"
+            "❌ ভিডিও ফাইল/URL পাওয়া যায়নি।\n"
+            "আবার `/vplay` দিয়ে চেষ্টা করুন।"
         )
         return
     except RuntimeError as exc:

@@ -1,4 +1,8 @@
-"""Core streaming logic -- join/leave voice chats, stream audio/video."""
+"""Core streaming logic -- join/leave voice chats, stream audio/video.
+
+Supports both local file paths and direct stream URLs (e.g. from YouTube).
+Uses the py-tgcalls 2.x MediaStream API with proper flags (based on AnonXMusic).
+"""
 
 from __future__ import annotations
 
@@ -29,12 +33,38 @@ if pytgcalls is None:
 
 
 # -- Import py-tgcalls types with compatibility handling --
+_HAS_MEDIA_STREAM = False
+_HAS_FLAGS = False
+_HAS_GROUP_CALL_CONFIG = False
+MediaStream = None
+AudioQuality = None
+VideoQuality = None
+
 try:
-    from pytgcalls.types import MediaStream, AudioQuality, VideoQuality
+    from pytgcalls.types import MediaStream as _MS, AudioQuality as _AQ, VideoQuality as _VQ
+    MediaStream = _MS
+    AudioQuality = _AQ
+    VideoQuality = _VQ
     _HAS_MEDIA_STREAM = True
 except ImportError:
-    _HAS_MEDIA_STREAM = False
     LOG.warning("Could not import MediaStream/AudioQuality/VideoQuality from pytgcalls.types")
+
+# Check for Flags support (py-tgcalls >= 2.1)
+if _HAS_MEDIA_STREAM:
+    try:
+        _ = MediaStream.Flags.IGNORE
+        _HAS_FLAGS = True
+    except AttributeError:
+        _HAS_FLAGS = False
+        LOG.info("MediaStream.Flags not available (older py-tgcalls version)")
+
+# Check for GroupCallConfig
+try:
+    from pytgcalls.types import GroupCallConfig
+    _HAS_GROUP_CALL_CONFIG = True
+except ImportError:
+    GroupCallConfig = None
+    _HAS_GROUP_CALL_CONFIG = False
 
 try:
     from pytgcalls.types.stream import StreamAudioEnded
@@ -43,68 +73,123 @@ except ImportError:
     _STREAM_END_TYPE = None
 
 
-def _make_audio_stream(file_path: str):
-    """Create an audio-only MediaStream compatible with multiple py-tgcalls versions."""
-    if not _HAS_MEDIA_STREAM:
-        raise RuntimeError("py-tgcalls MediaStream not available.")
-    try:
-        # py-tgcalls >= 2.1 with Flags support
-        return MediaStream(
-            file_path,
-            audio_parameters=AudioQuality.HIGH,
-            video_flags=MediaStream.Flags.IGNORE,
-        )
-    except (AttributeError, TypeError):
-        pass
-    try:
-        # Fallback: just audio parameters, no video flags
-        return MediaStream(
-            file_path,
-            audio_parameters=AudioQuality.HIGH,
-        )
-    except (AttributeError, TypeError):
-        pass
-    # Last resort: plain path
-    return MediaStream(file_path)
+def _is_url(path: str) -> bool:
+    """Check if path is a URL (not a local file)."""
+    return path.startswith("http://") or path.startswith("https://")
 
 
-def _make_video_stream(file_path: str):
-    """Create a video+audio MediaStream compatible with multiple py-tgcalls versions."""
+def _validate_media(media_path: str) -> None:
+    """Validate media path -- file must exist or be a URL."""
+    if not media_path:
+        raise FileNotFoundError("No media path provided.")
+    if _is_url(media_path):
+        return  # URLs are always accepted
+    if not os.path.isfile(media_path):
+        raise FileNotFoundError(f"File not found: {media_path}")
+
+
+def _make_audio_stream(media_path: str):
+    """Create an audio-only MediaStream (file or URL).
+
+    Uses video_flags=IGNORE for audio-only mode, matching
+    the approach used by AnonXMusic.
+    """
     if not _HAS_MEDIA_STREAM:
         raise RuntimeError("py-tgcalls MediaStream not available.")
+
+    if _HAS_FLAGS:
+        try:
+            return MediaStream(
+                media_path,
+                audio_parameters=AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+        except (AttributeError, TypeError) as e:
+            LOG.debug("MediaStream with Flags failed: %s", e)
+
+    # Fallback: just audio parameters
     try:
         return MediaStream(
-            file_path,
+            media_path,
+            audio_parameters=AudioQuality.HIGH,
+        )
+    except (AttributeError, TypeError) as e:
+        LOG.debug("MediaStream with AudioQuality failed: %s", e)
+
+    # Last resort
+    return MediaStream(media_path)
+
+
+def _make_video_stream(media_path: str):
+    """Create a video+audio MediaStream (file or URL).
+
+    Uses video_flags=AUTO_DETECT for video mode, matching
+    the approach used by AnonXMusic.
+    """
+    if not _HAS_MEDIA_STREAM:
+        raise RuntimeError("py-tgcalls MediaStream not available.")
+
+    if _HAS_FLAGS:
+        try:
+            return MediaStream(
+                media_path,
+                audio_parameters=AudioQuality.HIGH,
+                video_parameters=VideoQuality.HD_720p,
+                video_flags=MediaStream.Flags.AUTO_DETECT,
+            )
+        except (AttributeError, TypeError) as e:
+            LOG.debug("MediaStream video with Flags failed: %s", e)
+
+    # Fallback
+    try:
+        return MediaStream(
+            media_path,
             audio_parameters=AudioQuality.HIGH,
             video_parameters=VideoQuality.SD_480p,
         )
-    except (AttributeError, TypeError):
-        pass
-    return MediaStream(file_path)
+    except (AttributeError, TypeError) as e:
+        LOG.debug("MediaStream video fallback failed: %s", e)
+
+    return MediaStream(media_path)
+
+
+async def _do_play(chat_id: int, stream):
+    """Call pytgcalls.play with GroupCallConfig if available."""
+    if _HAS_GROUP_CALL_CONFIG:
+        try:
+            await pytgcalls.play(
+                chat_id, stream,
+                config=GroupCallConfig(auto_start=False),
+            )
+            return
+        except (TypeError, AttributeError) as e:
+            LOG.debug("play() with GroupCallConfig failed: %s", e)
+    await pytgcalls.play(chat_id, stream)
 
 
 # -- Public API ---
 
 async def stream_audio(
     chat_id: int,
-    file_path: str,
+    media_path: str,
     title: str = "",
     duration: int = 0,
     thumbnail: str = "",
     requester: str = "",
 ) -> None:
-    """Join voice chat (if needed) and start audio stream."""
+    """Join voice chat (if needed) and start audio stream.
+
+    media_path can be a local file path or a direct stream URL.
+    """
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
-    if not file_path or not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"Audio file not found: {file_path}. Download may have failed."
-        )
+    _validate_media(media_path)
     try:
-        audio = _make_audio_stream(file_path)
-        await pytgcalls.play(chat_id, audio)
+        audio = _make_audio_stream(media_path)
+        await _do_play(chat_id, audio)
         _active_chats.add(chat_id)
-        LOG.info("Streaming audio in %s: %s (%s)", chat_id, title, file_path)
+        LOG.info("Streaming audio in %s: %s (%s)",
+                 chat_id, title, media_path[:100])
     except Exception as exc:
         LOG.exception("Failed to stream audio in %s: %s", chat_id, exc)
         raise
@@ -112,24 +197,25 @@ async def stream_audio(
 
 async def stream_video(
     chat_id: int,
-    file_path: str,
+    media_path: str,
     title: str = "",
     duration: int = 0,
     thumbnail: str = "",
     requester: str = "",
 ) -> None:
-    """Join voice chat (if needed) and start video stream."""
+    """Join voice chat (if needed) and start video stream.
+
+    media_path can be a local file path or a direct stream URL.
+    """
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
-    if not file_path or not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"Video file not found: {file_path}. Download may have failed."
-        )
+    _validate_media(media_path)
     try:
-        stream = _make_video_stream(file_path)
-        await pytgcalls.play(chat_id, stream)
+        stream = _make_video_stream(media_path)
+        await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("Streaming video in %s: %s (%s)", chat_id, title, file_path)
+        LOG.info("Streaming video in %s: %s (%s)",
+                 chat_id, title, media_path[:100])
     except Exception as exc:
         LOG.exception("Failed to stream video in %s: %s", chat_id, exc)
         raise
@@ -144,15 +230,12 @@ async def stream_audio_with_image(
     """Stream audio with a static thumbnail image in video chat."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
-    if not file_path or not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"Audio file not found: {file_path}. Download may have failed."
-        )
+    _validate_media(file_path)
     try:
         stream = _make_audio_stream(file_path)
-        await pytgcalls.play(chat_id, stream)
+        await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("Streaming audio+image in %s: %s (%s)", chat_id, title, file_path)
+        LOG.info("Streaming audio+image in %s: %s", chat_id, title)
     except Exception as exc:
         LOG.exception("Failed to stream audio+image in %s: %s", chat_id, exc)
         raise
@@ -217,7 +300,6 @@ async def _on_stream_end(client, update):
     """When current track ends, play next in queue or leave."""
     chat_id = getattr(update, "chat_id", None)
     if chat_id is None:
-        # Some versions use different attribute names
         chat_id = getattr(update, "chat", {})
         if isinstance(chat_id, dict):
             chat_id = chat_id.get("id")
@@ -227,7 +309,6 @@ async def _on_stream_end(client, update):
 
     next_item = await skip_queue(chat_id)
     if next_item is None:
-        # Queue exhausted -- leave
         await leave_voice_chat(chat_id)
         try:
             await bot.send_message(
@@ -244,12 +325,12 @@ async def _on_stream_end(client, update):
     try:
         if next_item.stream_type == "video":
             await stream_video(
-                chat_id, next_item.file_path,
+                chat_id, next_item.media_path,
                 title=next_item.title, duration=next_item.duration,
             )
         else:
             await stream_audio(
-                chat_id, next_item.file_path,
+                chat_id, next_item.media_path,
                 title=next_item.title, duration=next_item.duration,
             )
 
@@ -302,4 +383,4 @@ if pytgcalls is not None:
             LOG.debug("Method 3 (on_closed_voice_chat) failed: %s", e)
 
     if not _registered:
-        LOG.warning("Could not register stream-end callback -- auto-skip to next track will not work.")
+        LOG.warning("Could not register stream-end callback -- auto-skip will not work.")

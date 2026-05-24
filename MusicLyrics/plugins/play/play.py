@@ -1,4 +1,8 @@
-"""Handler for /play <query|url> — audio playback in voice chat."""
+"""Handler for /play <query|url> — audio playback in voice chat.
+
+Uses stream URL extraction as primary method (no download needed),
+with download as fallback. Based on patterns from YukkiMusicBot.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from MusicLyrics.plugins.play.queue import (
 from MusicLyrics.plugins.play.stream import stream_audio, is_active
 from MusicLyrics.plugins.play.platforms.youtube import (
     search_youtube,
+    get_audio_stream_url,
     download_audio,
     get_video_info,
     is_youtube_url,
@@ -80,23 +85,46 @@ def _detect_platform(text: str) -> str:
     return "query"
 
 
+async def _get_audio_media(url: str) -> tuple[str, bool]:
+    """Get media path for audio playback.
+
+    Returns (media_path, is_stream_url).
+    Tries stream URL first, falls back to download.
+    """
+    # Try 1: Get stream URL (no download needed — fast)
+    stream_url = await get_audio_stream_url(url)
+    if stream_url:
+        LOG.info("Using stream URL for: %s", url)
+        return stream_url, True
+
+    # Try 2: Download to disk (fallback)
+    LOG.info("Stream URL failed, downloading: %s", url)
+    filepath = await download_audio(url)
+    if filepath and os.path.isfile(filepath):
+        return filepath, False
+
+    return "", False
+
+
 async def _resolve_query(query: str, platform: str, msg: Message):
-    """Resolve the user query into (info_dict, file_path) or raise."""
+    """Resolve the user query into (info_dict, media_path, is_stream_url) or raise."""
 
     # -- YouTube URL
     if platform == "youtube":
         info = await get_video_info(query)
         if not info:
-            raise ValueError("YouTube link থেকে তথ্য পাওয়া যায়নি।")
-        if info["duration"] > Config.DURATION_LIMIT_MIN * 60:
+            # Try searching by URL as query
+            info = {"title": "YouTube Audio", "url": query,
+                    "duration": 0, "thumbnail": "", "channel": ""}
+        if info["duration"] > Config.DURATION_LIMIT_MIN * 60 and info["duration"] > 0:
             raise ValueError(
                 f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, "
                 "play করা যাবে না।"
             )
-        filepath = await download_audio(query)
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে। আবার চেষ্টা করুন।")
-        return info, filepath
+        media_path, is_stream = await _get_audio_media(query)
+        if not media_path:
+            raise ValueError("YouTube থেকে audio পাওয়া যায়নি। আবার চেষ্টা করুন।")
+        return info, media_path, is_stream
 
     # -- Spotify
     if platform == "spotify":
@@ -106,34 +134,43 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         yt = await search_youtube(track["query"])
         if not yt:
             raise ValueError("YouTube-এ গানটি পাওয়া যায়নি।")
-        filepath = await download_audio(yt["url"])
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে।")
+        media_path, is_stream = await _get_audio_media(yt["url"])
+        if not media_path:
+            raise ValueError("Audio stream পাওয়া যায়নি।")
         info = {**yt, "platform": "spotify"}
-        return info, filepath
+        return info, media_path, is_stream
 
     # -- JioSaavn
     if platform == "jiosaavn":
         song = await get_jiosaavn_song(query)
         if not song:
             raise ValueError("JioSaavn link থেকে তথ্য পাওয়া যায়নি।")
+        # Try JioSaavn direct download first
         filepath = await download_jiosaavn(query)
-        if not filepath:
-            yt = await search_youtube(f"{song['title']} {song.get('artist','')}")
-            if not yt:
-                raise ValueError("গানটি download করা যায়নি।")
-            filepath = await download_audio(yt["url"])
-            if not filepath:
-                raise ValueError("Download ব্যর্থ হয়েছে।")
+        if filepath and os.path.isfile(filepath):
+            info = {
+                "title": song["title"], "url": song["url"],
+                "duration": song["duration"],
+                "thumbnail": song.get("thumbnail", ""),
+                "channel": song.get("artist", ""),
+                "platform": "jiosaavn",
+            }
+            return info, filepath, False
+        # Fallback to YouTube
+        yt = await search_youtube(f"{song['title']} {song.get('artist','')}")
+        if not yt:
+            raise ValueError("গানটি কোথাও পাওয়া যায়নি।")
+        media_path, is_stream = await _get_audio_media(yt["url"])
+        if not media_path:
+            raise ValueError("Audio stream পাওয়া যায়নি।")
         info = {
-            "title": song["title"],
-            "url": song["url"],
+            "title": song["title"], "url": song["url"],
             "duration": song["duration"],
             "thumbnail": song.get("thumbnail", ""),
             "channel": song.get("artist", ""),
             "platform": "jiosaavn",
         }
-        return info, filepath
+        return info, media_path, is_stream
 
     # -- Apple Music
     if platform == "apple_music":
@@ -143,35 +180,35 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         yt = await search_youtube(track["query"])
         if not yt:
             raise ValueError("YouTube-এ গানটি পাওয়া যায়নি।")
-        filepath = await download_audio(yt["url"])
-        if not filepath:
-            raise ValueError("Download ব্যর্থ হয়েছে।")
+        media_path, is_stream = await _get_audio_media(yt["url"])
+        if not media_path:
+            raise ValueError("Audio stream পাওয়া যায়নি।")
         info = {**yt, "platform": "apple_music"}
-        return info, filepath
+        return info, media_path, is_stream
 
-    # -- Direct URL (try yt-dlp)
+    # -- Direct URL
     if platform == "direct_url":
         info = await get_video_info(query)
         if not info:
             info = {"title": "Direct Stream", "url": query,
                     "duration": 0, "thumbnail": "", "channel": ""}
-        filepath = await download_audio(query)
-        if not filepath:
-            raise ValueError("URL থেকে download করা যায়নি।")
-        return info, filepath
+        media_path, is_stream = await _get_audio_media(query)
+        if not media_path:
+            raise ValueError("URL থেকে audio পাওয়া যায়নি।")
+        return info, media_path, is_stream
 
     # -- Plain text query: YouTube search
     yt = await search_youtube(query)
     if not yt:
         raise ValueError("কোনো result পাওয়া যায়নি। অন্য keyword দিয়ে চেষ্টা করুন।")
-    if yt["duration"] > Config.DURATION_LIMIT_MIN * 60:
+    if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
         raise ValueError(
             f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, play করা যাবে না।"
         )
-    filepath = await download_audio(yt["url"])
-    if not filepath:
-        raise ValueError("Download ব্যর্থ হয়েছে। আবার চেষ্টা করুন।")
-    return yt, filepath
+    media_path, is_stream = await _get_audio_media(yt["url"])
+    if not media_path:
+        raise ValueError("Audio stream পাওয়া যায়নি। আবার চেষ্টা করুন।")
+    return yt, media_path, is_stream
 
 
 @bot.on_message(filters.command(["play", "p"]) & not_edited)
@@ -207,7 +244,7 @@ async def play_command(client: Client, message: Message):
     platform = _detect_platform(query)
 
     try:
-        info, filepath = await _resolve_query(query, platform, message)
+        info, media_path, is_stream = await _resolve_query(query, platform, message)
     except ValueError as exc:
         await status_msg.edit_text(f"❌ **Error:** {exc}")
         return
@@ -216,13 +253,6 @@ async def play_command(client: Client, message: Message):
         await status_msg.edit_text(
             f"❌ কিছু একটা সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।\n"
             f"**Details:** `{type(exc).__name__}: {str(exc)[:200]}`"
-        )
-        return
-
-    if not filepath or not os.path.isfile(filepath):
-        await status_msg.edit_text(
-            "❌ গান ডাউনলোড হয়েছে কিন্তু ফাইল পাওয়া যায়নি।\n"
-            "আবার চেষ্টা করুন।"
         )
         return
 
@@ -235,13 +265,14 @@ async def play_command(client: Client, message: Message):
     item = QueueItem(
         title=title,
         url=url,
-        file_path=filepath,
+        media_path=media_path,
         duration=duration,
         requester=requester,
         requester_id=requester_id,
         thumbnail=thumbnail,
         stream_type="audio",
         platform=platform if platform != "query" else "youtube",
+        is_stream_url=is_stream,
     )
 
     position = await add_to_queue(chat_id, item)
@@ -261,15 +292,15 @@ async def play_command(client: Client, message: Message):
     # Start streaming
     try:
         await stream_audio(
-            chat_id, filepath,
+            chat_id, media_path,
             title=title, duration=duration,
             thumbnail=thumbnail, requester=requester,
         )
-    except FileNotFoundError as exc:
-        LOG.exception("File not found for stream in %s", chat_id)
+    except FileNotFoundError:
+        LOG.exception("Media not found for stream in %s", chat_id)
         await status_msg.edit_text(
-            f"❌ ডাউনলোড করা ফাইল পাওয়া যায়নি।\n"
-            f"আবার `/play` দিয়ে চেষ্টা করুন।"
+            "❌ মিডিয়া ফাইল/URL পাওয়া যায়নি।\n"
+            "আবার `/play` দিয়ে চেষ্টা করুন।"
         )
         return
     except RuntimeError as exc:

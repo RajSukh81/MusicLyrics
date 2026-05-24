@@ -3,7 +3,6 @@
 import os
 import asyncio
 import re
-import tempfile
 import logging
 
 from pyrogram import filters
@@ -11,120 +10,32 @@ from pyrogram.types import Message
 
 from MusicLyrics.bot import bot
 from config import Config
+from MusicLyrics.plugins.play.platforms.youtube import (
+    search_youtube,
+    download_audio as yt_download_audio,
+    download_video as yt_download_video,
+)
 
 LOG = logging.getLogger(__name__)
 
 
-async def _yt_search(query: str) -> dict | None:
-    """Search YouTube and return first result info dict."""
-    try:
-        import yt_dlp
-
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "geo_bypass": True,
-            "nocheckcertificate": True,
-            "default_search": "ytsearch1",
-            "noplaylist": True,
-            "socket_timeout": 15,
-        }
-        loop = asyncio.get_running_loop()
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: ydl.extract_info(query, download=False)
-                ),
-                timeout=60,
-            )
-        if not info:
-            return None
-        # If search result, get first entry
-        entries = info.get("entries")
-        if entries:
-            return entries[0] if entries else None
-        return info
-    except asyncio.TimeoutError:
-        LOG.error("yt-dlp search timed out for: %s", query)
-        return None
-    except Exception as e:
-        LOG.exception("yt-dlp search error: %s", e)
-        return None
-
-
 async def _download(query: str, audio_only: bool = True) -> tuple[str | None, dict | None]:
-    """Download audio/video and return (filepath, info)."""
-    info = await _yt_search(query)
+    """Search YouTube and download audio/video, return (filepath, info)."""
+    # Use youtube-search-python (no bot detection) for search
+    info = await search_youtube(query)
     if not info:
         return None, None
 
-    url = info.get("webpage_url") or info.get("url", query)
-    title = info.get("title", "Unknown")
-    # Sanitize filename
-    safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title)[:50]
+    url = info.get("url", query)
 
-    dl_dir = Config.DOWNLOADS_DIR
-    os.makedirs(dl_dir, exist_ok=True)
-
+    # Download using yt-dlp with anti-bot mitigations
     if audio_only:
-        out_path = os.path.join(dl_dir, f"{safe_title}.%(ext)s")
-        opts = {
-            "format": "bestaudio/best",
-            "outtmpl": out_path,
-            "quiet": True,
-            "no_warnings": True,
-            "geo_bypass": True,
-            "nocheckcertificate": True,
-            "noplaylist": True,
-            "socket_timeout": 30,
-            "retries": 3,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "128",
-                }
-            ],
-        }
+        filepath = await yt_download_audio(url)
     else:
-        out_path = os.path.join(dl_dir, f"{safe_title}.%(ext)s")
-        opts = {
-            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
-            "outtmpl": out_path,
-            "quiet": True,
-            "no_warnings": True,
-            "geo_bypass": True,
-            "nocheckcertificate": True,
-            "noplaylist": True,
-            "socket_timeout": 30,
-            "retries": 3,
-            "merge_output_format": "mp4",
-        }
+        filepath = await yt_download_video(url)
 
-    import yt_dlp
-    import glob
-
-    loop = asyncio.get_running_loop()
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: ydl.extract_info(url, download=True)
-                ),
-                timeout=120,
-            )
-    except asyncio.TimeoutError:
-        LOG.error("yt-dlp download timed out for: %s", url)
-        return None, info
-    except Exception:
-        LOG.exception("yt-dlp download failed for: %s", url)
-        return None, info
-
-    # Find the downloaded file
-    base_pattern = os.path.join(dl_dir, f"{safe_title}.*")
-    matches = glob.glob(base_pattern)
-    if matches:
-        return matches[0], info
+    if filepath and os.path.isfile(filepath):
+        return filepath, info
 
     return None, info
 

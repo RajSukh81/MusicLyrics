@@ -101,10 +101,10 @@ async def skip_cmd(client: Client, message: Message):
 
     try:
         if next_item.stream_type == "video":
-            await stream_video(chat_id, next_item.file_path,
+            await stream_video(chat_id, next_item.media_path,
                                title=next_item.title)
         else:
-            await stream_audio(chat_id, next_item.file_path,
+            await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
         dur = format_duration(next_item.duration)
         await message.reply_text(
@@ -299,10 +299,10 @@ async def cb_skip(client: Client, callback: CallbackQuery):
 
     try:
         if next_item.stream_type == "video":
-            await stream_video(chat_id, next_item.file_path,
+            await stream_video(chat_id, next_item.media_path,
                                title=next_item.title)
         else:
-            await stream_audio(chat_id, next_item.file_path,
+            await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
         await callback.answer(f"⏭ {next_item.title[:30]}")
         dur = format_duration(next_item.duration)
