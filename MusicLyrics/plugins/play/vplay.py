@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from pyrogram import Client, filters
@@ -171,10 +172,18 @@ async def vplay_command(client: Client, message: Message):
     except ValueError as exc:
         await status_msg.edit_text(f"❌ **Error:** {exc}")
         return
-    except Exception:
+    except Exception as exc:
         LOG.exception("Unexpected error in /vplay for %s", chat_id)
         await status_msg.edit_text(
-            "❌ কিছু একটা সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।"
+            f"❌ কিছু একটা সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।\n"
+            f"**Details:** `{type(exc).__name__}: {str(exc)[:200]}`"
+        )
+        return
+
+    if not filepath or not os.path.isfile(filepath):
+        await status_msg.edit_text(
+            "❌ ভিডিও ডাউনলোড হয়েছে কিন্তু ফাইল পাওয়া যায়নি।\n"
+            "আবার চেষ্টা করুন।"
         )
         return
 
@@ -215,12 +224,26 @@ async def vplay_command(client: Client, message: Message):
             title=title, duration=duration,
             thumbnail=thumbnail, requester=requester,
         )
-    except Exception:
+    except FileNotFoundError as exc:
+        LOG.exception("File not found for video stream in %s", chat_id)
+        await status_msg.edit_text(
+            f"❌ ডাউনলোড করা ভিডিও ফাইল পাওয়া যায়নি।\n"
+            f"আবার `/vplay` দিয়ে চেষ্টা করুন।"
+        )
+        return
+    except RuntimeError as exc:
+        await status_msg.edit_text(
+            f"❌ {exc}\n\n"
+            "STRING_SESSION সেট করা আছে কিনা চেক করুন।"
+        )
+        return
+    except Exception as exc:
         LOG.exception("Video stream start failed in %s", chat_id)
         await status_msg.edit_text(
             "❌ Voice chat-এ video stream করা যাচ্ছে না।\n"
             "নিশ্চিত করুন voice chat চালু আছে এবং "
-            "userbot-কে admin বানানো হয়েছে।"
+            "userbot-কে admin বানানো হয়েছে।\n\n"
+            f"**Error:** `{type(exc).__name__}: {str(exc)[:150]}`"
         )
         return
 

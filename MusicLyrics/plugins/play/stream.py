@@ -96,13 +96,17 @@ async def stream_audio(
     """Join voice chat (if needed) and start audio stream."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
+    if not file_path or not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"Audio file not found: {file_path}. Download may have failed."
+        )
     try:
         audio = _make_audio_stream(file_path)
         await pytgcalls.play(chat_id, audio)
         _active_chats.add(chat_id)
-        LOG.info("Streaming audio in %s: %s", chat_id, title)
-    except Exception:
-        LOG.exception("Failed to stream audio in %s", chat_id)
+        LOG.info("Streaming audio in %s: %s (%s)", chat_id, title, file_path)
+    except Exception as exc:
+        LOG.exception("Failed to stream audio in %s: %s", chat_id, exc)
         raise
 
 
@@ -117,13 +121,17 @@ async def stream_video(
     """Join voice chat (if needed) and start video stream."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
+    if not file_path or not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"Video file not found: {file_path}. Download may have failed."
+        )
     try:
         stream = _make_video_stream(file_path)
         await pytgcalls.play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("Streaming video in %s: %s", chat_id, title)
-    except Exception:
-        LOG.exception("Failed to stream video in %s", chat_id)
+        LOG.info("Streaming video in %s: %s (%s)", chat_id, title, file_path)
+    except Exception as exc:
+        LOG.exception("Failed to stream video in %s: %s", chat_id, exc)
         raise
 
 
@@ -136,13 +144,17 @@ async def stream_audio_with_image(
     """Stream audio with a static thumbnail image in video chat."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
+    if not file_path or not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"Audio file not found: {file_path}. Download may have failed."
+        )
     try:
         stream = _make_audio_stream(file_path)
         await pytgcalls.play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("Streaming audio+image in %s: %s", chat_id, title)
-    except Exception:
-        LOG.exception("Failed to stream audio+image in %s", chat_id)
+        LOG.info("Streaming audio+image in %s: %s (%s)", chat_id, title, file_path)
+    except Exception as exc:
+        LOG.exception("Failed to stream audio+image in %s: %s", chat_id, exc)
         raise
 
 

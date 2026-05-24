@@ -210,17 +210,38 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
                 None, lambda: ydl.extract_info(url, download=True)
             )
             if not info:
+                LOG.warning("yt-dlp returned no info for: %s", url)
                 return None
             path = ydl.prepare_filename(info)
             # yt-dlp may change extension after post-processing
             if os.path.exists(path):
+                LOG.info("Downloaded file found at: %s", path)
                 return path
-            # Try without extension
+            # After post-processing (e.g. FFmpegExtractAudio), the
+            # extension changes.  Try common audio/video extensions first.
             base = os.path.splitext(path)[0]
-            matches = glob.glob(f"{base}.*")
+            for ext in (
+                ".opus", ".m4a", ".webm", ".mp3", ".ogg", ".wav",
+                ".mp4", ".mkv", ".flv",
+            ):
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    LOG.info("Post-processed file found at: %s", candidate)
+                    return candidate
+            # Fallback: glob for anything matching the base name
+            matches = sorted(
+                glob.glob(f"{base}.*"),
+                key=os.path.getmtime,
+                reverse=True,
+            )
             if matches:
+                LOG.info("Glob-matched file: %s", matches[0])
                 return matches[0]
-            return path
+            LOG.warning(
+                "Downloaded file NOT found. Expected path: %s (base: %s)",
+                path, base,
+            )
+            return None
     except Exception:
         LOG.exception("yt-dlp download failed: %s", url)
         return None

@@ -1,7 +1,13 @@
 """AI chatbot plugin -- replies to group messages intelligently."""
 
+import asyncio
 import logging
 import random
+import time
+import hashlib
+from collections import deque
+from typing import Optional
+
 import aiohttp
 
 from pyrogram import filters
@@ -13,7 +19,28 @@ from config import Config
 
 LOG = logging.getLogger(__name__)
 
-# Simple AI personality responses when no API key is configured
+# ── Conversation history per chat (last N exchanges) ──────────────────────────
+_MAX_HISTORY = 10
+_chat_histories: dict[int, deque] = {}
+
+# ── Track recent replies to avoid repetition ──────────────────────────────────
+_MAX_RECENT = 15
+_recent_replies: dict[int, deque] = {}
+
+
+def _get_history(chat_id: int) -> deque:
+    if chat_id not in _chat_histories:
+        _chat_histories[chat_id] = deque(maxlen=_MAX_HISTORY)
+    return _chat_histories[chat_id]
+
+
+def _get_recent(chat_id: int) -> deque:
+    if chat_id not in _recent_replies:
+        _recent_replies[chat_id] = deque(maxlen=_MAX_RECENT)
+    return _recent_replies[chat_id]
+
+
+# ── Bangla fallback replies — large set to reduce repetition ──────────────────
 _BANGLA_REPLIES = [
     "হ্যাঁ ভাই, বলো কী হেল্প লাগবে? 😄",
     "আমি শুনছি! কী দরকার বলো? 🎵",
@@ -35,6 +62,26 @@ _BANGLA_REPLIES = [
     "গান ছাড়ো! /play দাও! 🎶",
     "তুমি ভালো মানুষ! আমি জানি! 😊",
     "হ্যাঁ রে, বলো কী চাই? 🙌",
+    "আজকে কেমন আছো? আমি তো সবসময়ই ভালো! 😎",
+    "তোমার সাথে কথা বলে মজা লাগছে! 😁",
+    "আরে বাহ! তুমি তো ভালোই বলেছো! 👏",
+    "একটু অপেক্ষা করো, ভাবছি... 🤔💭",
+    "ও আচ্ছা! বুঝলাম বুঝলাম! 💡",
+    "তুমি কি গান পছন্দ করো? /play চেষ্টা করো! 🎤",
+    "ভিডিও দেখতে চাও? /vplay ট্রাই করো! 🎬",
+    "হ্যাঁ ভাই, আমি রেডি! কী করবো বলো! 🚀",
+    "দারুণ! আরো কিছু বলো! 🌟",
+    "আমি AI বট, কিন্তু তোমার ভালো বন্ধু! 🤝",
+    "সুন্দর কথা বলেছো! 💐",
+    "ওহো! সেটা তো ইন্টারেস্টিং! 🧐",
+    "চলো কিছু মজার কাজ করি! 🎉",
+    "তুমি চাইলে /song দিয়ে গান ডাউনলোড করতে পারো! 📥",
+    "কোনো প্রশ্ন থাকলে নির্দ্বিধায় জিজ্ঞেস করো! ✋",
+    "আমি ২৪/৭ অনলাইন আছি তোমার জন্য! ⏰",
+    "তুমি কি জানো আমি গেমও খেলাতে পারি? /ttt চেষ্টা করো! 🎯",
+    "হাহা সেটা মজার ছিল! 😆",
+    "আচ্ছা ঠিক আছে, পরে আবার কথা হবে! 👋",
+    "তোমার জন্য কী করতে পারি আজকে? 🎁",
 ]
 
 _EMOJI_REACTIONS = [
@@ -43,10 +90,26 @@ _EMOJI_REACTIONS = [
 ]
 
 
-async def _ai_response(text: str) -> str:
-    """Get AI response using configured API, or fallback to simple replies."""
+def _pick_non_repeating(chat_id: int) -> str:
+    """Pick a reply from _BANGLA_REPLIES that hasn't been used recently."""
+    recent = _get_recent(chat_id)
+    available = [r for r in _BANGLA_REPLIES if r not in recent]
+    if not available:
+        # All used recently, reset
+        recent.clear()
+        available = _BANGLA_REPLIES
+    chosen = random.choice(available)
+    recent.append(chosen)
+    return chosen
+
+
+async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
+    """Get AI response using configured API, or fallback to smart replies."""
     if not Config.AI_API_KEY:
-        return random.choice(_BANGLA_REPLIES)
+        return _pick_non_repeating(chat_id)
+
+    # Build conversation context from history
+    history = _get_history(chat_id)
 
     # Try Google Gemini API
     try:
@@ -55,32 +118,55 @@ async def _ai_response(text: str) -> str:
             "models/gemini-2.0-flash:generateContent"
             f"?key={Config.AI_API_KEY}"
         )
+
+        # Build conversation messages
+        contents = []
+
+        # System instruction via first user message
+        system_prompt = (
+            "You are MusicLyrics Bot, a fun and helpful Telegram group bot. "
+            "Reply in the same language the user writes in (Bengali/Bangla or English). "
+            "Keep replies short (1-3 sentences), friendly, and casual. "
+            "You can suggest music commands like /play, /vplay, /song when relevant. "
+            "Be witty, entertaining, and vary your responses. "
+            "Never repeat the same reply twice. "
+            "If someone asks about your capabilities, mention music streaming, "
+            "games (/quiz, /truth, /dare, /ttt), and other features."
+        )
+
+        # Add conversation history for context
+        for role, msg in history:
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg}],
+            })
+
+        # Add current message
+        user_text = f"{text}"
+        if user_name:
+            user_text = f"[User: {user_name}] {text}"
+
+        contents.append({
+            "role": "user",
+            "parts": [{"text": user_text}],
+        })
+
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": (
-                                "You are MusicLyrics Bot, a fun and helpful Telegram group bot. "
-                                "Reply in the same language the user writes in (Bengali/Bangla or English). "
-                                "Keep replies short (1-3 sentences), friendly, and casual. "
-                                "You can suggest music commands like /play, /vplay, /song. "
-                                "Be witty and entertaining.\n\n"
-                                f"User says: {text}"
-                            )
-                        }
-                    ]
-                }
-            ],
+            "system_instruction": {
+                "parts": [{"text": system_prompt}],
+            },
+            "contents": contents,
             "generationConfig": {
-                "maxOutputTokens": 150,
-                "temperature": 0.8,
+                "maxOutputTokens": 200,
+                "temperature": 0.9,
+                "topP": 0.95,
             },
         }
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -88,11 +174,24 @@ async def _ai_response(text: str) -> str:
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
-                            return parts[0].get("text", "").strip()
+                            reply = parts[0].get("text", "").strip()
+                            if reply:
+                                # Save to history
+                                history.append(("user", text))
+                                history.append(("model", reply))
+                                return reply
+                else:
+                    error_text = await resp.text()
+                    LOG.warning(
+                        "Gemini API error (status %d): %s",
+                        resp.status, error_text[:300],
+                    )
+    except asyncio.TimeoutError:
+        LOG.warning("Gemini API timeout for chat %s", chat_id)
     except Exception as e:
         LOG.warning("AI API call failed: %s", e)
 
-    return random.choice(_BANGLA_REPLIES)
+    return _pick_non_repeating(chat_id)
 
 
 async def _try_react(client, message: Message):
@@ -158,6 +257,13 @@ async def _is_bot_mentioned(_, client, message: Message) -> bool:
 _bot_mentioned_filter = filters.create(_is_bot_mentioned, name="BotMentionedFilter")
 
 
+def _get_user_name(message: Message) -> str:
+    """Extract a display name from the message sender."""
+    if message.from_user:
+        return message.from_user.first_name or ""
+    return ""
+
+
 @bot.on_message(filters.group & _reply_to_bot_filter, group=50)
 async def ai_reply_when_replied(client, message: Message):
     """Respond when someone replies to the bot's message in a group."""
@@ -166,7 +272,11 @@ async def ai_reply_when_replied(client, message: Message):
         user_text = message.text or ""
         if not user_text.strip():
             return
-        response = await _ai_response(user_text)
+        response = await _ai_response(
+            user_text,
+            chat_id=message.chat.id,
+            user_name=_get_user_name(message),
+        )
         if response:
             await message.reply_text(response)
     except Exception:
@@ -182,7 +292,11 @@ async def ai_reply_when_mentioned(client, message: Message):
         if not clean_text:
             clean_text = "hi"
         await _try_react(client, message)
-        response = await _ai_response(clean_text)
+        response = await _ai_response(
+            clean_text,
+            chat_id=message.chat.id,
+            user_name=_get_user_name(message),
+        )
         if response:
             await message.reply_text(response)
     except Exception:
@@ -197,7 +311,11 @@ async def ai_reply_private(client, message: Message):
         return
     try:
         await _try_react(client, message)
-        response = await _ai_response(user_text)
+        response = await _ai_response(
+            user_text,
+            chat_id=message.chat.id,
+            user_name=_get_user_name(message),
+        )
         if response:
             await message.reply_text(response)
     except Exception:
