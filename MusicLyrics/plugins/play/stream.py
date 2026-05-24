@@ -159,7 +159,7 @@ async def _do_play(chat_id: int, stream):
         try:
             await pytgcalls.play(
                 chat_id, stream,
-                config=GroupCallConfig(auto_start=False),
+                config=GroupCallConfig(auto_start=True),
             )
             return
         except (TypeError, AttributeError) as e:

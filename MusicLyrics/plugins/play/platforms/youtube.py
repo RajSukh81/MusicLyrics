@@ -39,6 +39,8 @@ _PIPED_INSTANCES = [
     "https://api.piped.projectsegfau.lt",
     "https://pipedapi.darkness.services",
     "https://pipedapi.drgns.space",
+    "https://pipedapi.r4fo.com",
+    "https://pipedapi.leptons.xyz",
 ]
 
 # Invidious instances as additional fallback
@@ -47,6 +49,8 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.fdn.fr",
     "https://invidious.privacyredirect.com",
     "https://invidious.protokolla.fi",
+    "https://vid.puffyan.us",
+    "https://invidious.nerdvpn.de",
 ]
 
 _PROXY_HEADERS = {
@@ -278,9 +282,10 @@ def _get_cookie() -> Optional[str]:
 # YouTube aggressively blocks "web" and "mweb" on cloud IPs.
 # We try multiple client combos in order of reliability.
 _CLIENT_COMBOS: list[list[str]] = [
-    ["ios", "web"],
-    ["android_vr", "web"],
-    ["tv", "web"],
+    ["default"],
+    ["ios"],
+    ["android_vr"],
+    ["tv_embedded"],
     ["web"],
 ]
 
@@ -301,7 +306,6 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
-                "player_skip": ["webpage", "configs"],
             },
         },
         "http_headers": {
@@ -827,7 +831,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         run_opts["extractor_args"] = {
             "youtube": {
                 "player_client": combo,
-                "player_skip": ["webpage", "configs"],
             },
         }
         # Preserve cookies

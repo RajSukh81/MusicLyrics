@@ -89,19 +89,20 @@ async def _get_audio_media(url: str) -> tuple[str, bool]:
     """Get media path for audio playback.
 
     Returns (media_path, is_stream_url).
-    Tries stream URL first, falls back to download.
+    On cloud servers, download-first is more reliable than streaming URLs
+    (avoids IP-restricted googlevideo URLs and proxy failures).
     """
-    # Try 1: Get stream URL (no download needed — fast)
-    stream_url = await get_audio_stream_url(url)
-    if stream_url:
-        LOG.info("Using stream URL for: %s", url)
-        return stream_url, True
-
-    # Try 2: Download to disk (fallback)
-    LOG.info("Stream URL failed, downloading: %s", url)
+    # Strategy: Download to local file first (most reliable on cloud)
+    LOG.info("Downloading audio for: %s", url)
     filepath = await download_audio(url)
     if filepath and os.path.isfile(filepath):
         return filepath, False
+
+    # Fallback: Try stream URL directly (less reliable but no disk usage)
+    LOG.info("Download failed, trying stream URL for: %s", url)
+    stream_url = await get_audio_stream_url(url)
+    if stream_url:
+        return stream_url, True
 
     return "", False
 
