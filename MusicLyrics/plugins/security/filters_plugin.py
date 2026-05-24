@@ -95,13 +95,13 @@ async def list_filters_cmd(client: Client, message: Message):
     await message.reply_text("\n".join(lines))
 
 
-# ── /stop <keyword> ─────────────────────────────────────────────────────────
+# ── /rmfilter <keyword> ──────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("stop") & filters.group)
+@bot.on_message(filters.command(["rmfilter", "delfilter"]) & filters.group)
 @admin_required
 async def stop_filter_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply_text("**Usage:** `/stop <keyword>`")
+        await message.reply_text("**Usage:** `/rmfilter <keyword>`")
         return
 
     keyword = message.command[1].lower().strip()

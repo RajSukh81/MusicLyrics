@@ -2,7 +2,7 @@
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.enums import ChatMemberStatus, ChatType
+from pyrogram.enums import ChatMemberStatus, ChatMembersFilter, ChatType
 from pyrogram.errors import (
     ChatAdminRequired,
     UserAdminInvalid,
@@ -91,7 +91,7 @@ async def admin_list(client: Client, message: Message):
         admins = []
         creator = None
         async for member in client.get_chat_members(
-            message.chat.id, filter=filters.ChatMembersFilter.ADMINISTRATORS  # type: ignore[arg-type]
+            message.chat.id, filter=ChatMembersFilter.ADMINISTRATORS
         ):
             if member.status == ChatMemberStatus.OWNER:
                 creator = member.user

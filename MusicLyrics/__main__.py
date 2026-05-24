@@ -109,7 +109,7 @@ async def main():
     LOG.info("Shutting down MusicLyrics...")
     if Config.STRING_SESSION and pytgcalls:
         # py-tgcalls 2.x has no stop(); leave all active calls instead
-        for chat_id in list(await pytgcalls.calls):
+        for chat_id in list(pytgcalls.calls):
             try:
                 await pytgcalls.leave_call(chat_id)
             except Exception:

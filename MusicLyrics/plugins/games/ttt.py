@@ -78,7 +78,7 @@ def minimax(board, is_maximizing):
         for i in range(9):
             if board[i] == EMPTY:
                 board[i] = X
-                best = min(best, minimax(board, i))
+                best = min(best, minimax(board, True))
                 board[i] = EMPTY
         return best
 
