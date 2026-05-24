@@ -41,3 +41,7 @@ services:
         sync: false
       - key: AI_API_KEY
         sync: false
+      - key: YOUTUBE_PROXY
+        sync: false
+      - key: YOUTUBE_PROXY_LIST
+        sync: false

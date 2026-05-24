@@ -82,6 +82,42 @@
 | `SPOTIFY_CLIENT_SECRET` | No | Spotify app client secret |
 | `YOUTUBE_API_KEY` | No | YouTube Data API v3 key for enhanced search |
 
+### YouTube Proxy (Cloud Deploy-এর জন্য জরুরি)
+
+YouTube cloud server IP (Heroku, Railway, Render, Koyeb) থেকে request block করে। তাই proxy **অবশ্যই** লাগবে।
+
+| Variable | Description |
+|---|---|
+| `YOUTUBE_PROXY` | Single proxy — `http://user:pass@host:port` |
+| `YOUTUBE_PROXY_LIST` | Multiple proxies for rotation (comma-separated) |
+
+**`YOUTUBE_PROXY_LIST` সেট করলে সেটা priority পায়।** না থাকলে `YOUTUBE_PROXY` ব্যবহার হয়। দুটো না থাকলে bot proxy ছাড়া চলবে (VPS/local এ কাজ করবে, cloud এ YouTube block করবে)।
+
+**Supported formats for `YOUTUBE_PROXY_LIST`:**
+```
+# Webshare / common format (auto-converted):
+ip:port:username:password
+
+# Standard URL format:
+http://username:password@host:port
+
+# SOCKS5 proxy:
+socks5://username:password@host:port
+```
+
+**Example:**
+```env
+YOUTUBE_PROXY_LIST=38.154.203.95:5863:myuser:mypass,198.105.121.200:6462:myuser:mypass,64.137.96.74:6641:myuser:mypass
+```
+
+### YouTube Cookies (Optional কিন্তু recommended)
+
+| Variable | Description |
+|---|---|
+| `COOKIES_TXT` | YouTube cookies (Netscape format) — "Sign in" error ঠিক করে |
+| `YT_PO_TOKEN` | Proof of Origin token (advanced, optional) |
+| `YT_VISITOR_DATA` | Visitor data string (advanced, optional) |
+
 > Copy `.env.example` to `.env` and fill in your values before deploying.
 
 ---
@@ -155,11 +191,14 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/MusicLyrics.git
+git clone https://github.com/RajSukh81/MusicLyrics.git
 cd MusicLyrics
 
+# Install system dependencies (Ubuntu/Debian)
+sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip ffmpeg git nodejs npm
+
 # Create virtual environment
-python3 -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
@@ -168,11 +207,56 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your credentials
+nano .env   # Edit with your credentials
 
 # Run the bot
 python3 -m MusicLyrics
 ```
+
+#### VPS-এ 24/7 চালু রাখতে (systemd)
+
+```bash
+sudo nano /etc/systemd/system/musiclyrics.service
+```
+
+নিচের content পেস্ট করো (`WorkingDirectory` path নিজের মতো ঠিক করে নাও):
+
+```ini
+[Unit]
+Description=MusicLyrics Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/MusicLyrics
+Environment=PATH=/home/ubuntu/MusicLyrics/venv/bin:/usr/local/bin:/usr/bin
+EnvironmentFile=/home/ubuntu/MusicLyrics/.env
+ExecStart=/home/ubuntu/MusicLyrics/venv/bin/python3 -m MusicLyrics
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable musiclyrics   # boot-এ auto-start
+sudo systemctl start musiclyrics    # এখনই চালু
+sudo systemctl status musiclyrics   # status দেখা
+journalctl -u musiclyrics -f        # live logs
+```
+
+#### Free VPS Options
+
+| Provider | Free Tier | RAM | Notes |
+|---|---|---|---|
+| [Oracle Cloud](https://cloud.oracle.com) | Always Free | 1-24GB | সেরা — ARM 4CPU/24GB or AMD 1CPU/1GB |
+| [Google Cloud](https://cloud.google.com) | e2-micro forever | 1GB | $300 credit (90 days) + e2-micro free |
+| [AWS EC2](https://aws.amazon.com) | t2.micro 12 months | 1GB | Credit card required |
+
+> **VPS-এ proxy সাধারণত লাগে না** — VPS-এর IP residential না হলেও YouTube সাধারণত VPS IP কম block করে cloud PaaS (Heroku/Railway) এর তুলনায়।
 
 ### Docker (with MongoDB)
 
