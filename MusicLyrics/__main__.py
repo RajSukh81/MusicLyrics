@@ -9,6 +9,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import aiohttp
 from pyrogram import idle, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatType, ParseMode
@@ -169,6 +170,47 @@ def _setup_event_logging():
     LOG.info("Event logging handlers registered.")
 
 
+async def _delete_webhook():
+    """Explicitly delete any Telegram webhook to ensure long polling works."""
+    url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteWebhook"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                result = await resp.json()
+                if result.get("result"):
+                    LOG.info("Webhook deleted successfully.")
+                else:
+                    LOG.info("deleteWebhook response: %s", result)
+    except Exception as e:
+        LOG.warning("Could not delete webhook: %s", e)
+
+
+async def _check_bot_info():
+    """Log bot info for diagnostics."""
+    url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/getWebhookInfo"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                result = await resp.json()
+                info = result.get("result", {})
+                webhook_url = info.get("url", "")
+                pending = info.get("pending_update_count", 0)
+                LOG.info(
+                    "Webhook info: url=%s, pending_updates=%d, last_error=%s",
+                    webhook_url or "(none)",
+                    pending,
+                    info.get("last_error_message", "none"),
+                )
+                if webhook_url:
+                    LOG.warning(
+                        "WEBHOOK IS SET to '%s'! This prevents long polling. "
+                        "Deleting it now...", webhook_url
+                    )
+                    await _delete_webhook()
+    except Exception as e:
+        LOG.warning("Could not check webhook info: %s", e)
+
+
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
 
@@ -179,7 +221,17 @@ async def main():
     if handler_count == 0:
         LOG.warning("No handlers registered after plugin loading!")
 
+    # CRITICAL: Delete any webhook BEFORE starting the bot.
+    # If a webhook is set (from a previous deployment), Telegram sends all
+    # updates to the webhook URL and long polling receives NOTHING.
+    await _check_bot_info()
+    await _delete_webhook()
+
     await _start_with_retry(bot, "Bot")
+
+    # Verify bot can receive updates
+    bot_me = await bot.get_me()
+    LOG.info("Bot identity: @%s (ID: %d)", bot_me.username, bot_me.id)
 
     if Config.STRING_SESSION and userbot and pytgcalls:
         await _start_with_retry(userbot, "Userbot")
