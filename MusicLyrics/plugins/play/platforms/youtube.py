@@ -2,7 +2,9 @@
 
 Search uses YouTube's innertube API directly via aiohttp (no external
 library needed — avoids youtube-search-python httpx compatibility issues).
-Download/stream uses yt-dlp with anti-bot mitigations.
+
+Stream URL extraction uses Piped/Invidious API proxies as PRIMARY method
+(works on cloud servers without cookies), with yt-dlp as fallback.
 """
 
 from __future__ import annotations
@@ -24,6 +26,197 @@ LOG = logging.getLogger(__name__)
 
 _DOWNLOADS = Config.DOWNLOADS_DIR
 os.makedirs(_DOWNLOADS, exist_ok=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PIPED / INVIDIOUS API — cookie-free YouTube proxy (PRIMARY method)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Multiple public Piped API instances for redundancy
+_PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://api.piped.projectsegfau.lt",
+    "https://pipedapi.darkness.services",
+    "https://pipedapi.drgns.space",
+]
+
+# Invidious instances as additional fallback
+_INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.fdn.fr",
+    "https://invidious.privacyredirect.com",
+    "https://invidious.protokolla.fi",
+]
+
+_PROXY_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _extract_video_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from various URL formats."""
+    patterns = [
+        r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})",
+        r"(?:embed/|shorts/)([a-zA-Z0-9_-]{11})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _piped_get_streams(video_id: str) -> Optional[dict]:
+    """Get stream info from Piped API. Returns dict with audioStreams, videoStreams, etc."""
+    instances = list(_PIPED_INSTANCES)
+    random.shuffle(instances)
+
+    for base_url in instances:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base_url}/streams/{video_id}",
+                    headers=_PROXY_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and data.get("audioStreams"):
+                            LOG.info("Piped stream obtained from %s for %s", base_url, video_id)
+                            return data
+                    else:
+                        LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
+        except Exception as e:
+            LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
+            continue
+
+    return None
+
+
+async def _invidious_get_streams(video_id: str) -> Optional[dict]:
+    """Get stream info from Invidious API."""
+    instances = list(_INVIDIOUS_INSTANCES)
+    random.shuffle(instances)
+
+    for base_url in instances:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base_url}/api/v1/videos/{video_id}",
+                    headers=_PROXY_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and data.get("adaptiveFormats"):
+                            LOG.info("Invidious stream obtained from %s for %s", base_url, video_id)
+                            return data
+                    else:
+                        LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
+        except Exception as e:
+            LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)
+            continue
+
+    return None
+
+
+def _best_piped_audio_url(data: dict) -> Optional[str]:
+    """Pick the best audio stream URL from Piped response."""
+    streams = data.get("audioStreams", [])
+    if not streams:
+        return None
+    # Prefer opus/webm, then m4a, sorted by bitrate
+    opus = [s for s in streams if s.get("codec", "").startswith("opus")]
+    if opus:
+        best = max(opus, key=lambda s: s.get("bitrate", 0))
+        return best.get("url")
+    # Fallback: any audio stream with highest bitrate
+    best = max(streams, key=lambda s: s.get("bitrate", 0))
+    return best.get("url")
+
+
+def _best_piped_video_url(data: dict) -> Optional[str]:
+    """Pick the best video stream URL from Piped response (with audio)."""
+    # First try videoStreams (muxed — has both audio+video)
+    streams = data.get("videoStreams", [])
+    if streams:
+        # Prefer mp4, max 720p
+        candidates = [s for s in streams
+                      if s.get("videoOnly") is not True
+                      and (s.get("height", 0) or 0) <= 720]
+        if not candidates:
+            candidates = [s for s in streams if s.get("videoOnly") is not True]
+        if candidates:
+            best = max(candidates, key=lambda s: s.get("height", 0) or 0)
+            return best.get("url")
+    # Fallback: audio-only stream for video player
+    return _best_piped_audio_url(data)
+
+
+def _best_invidious_audio_url(data: dict) -> Optional[str]:
+    """Pick best audio URL from Invidious response."""
+    formats = data.get("adaptiveFormats", [])
+    audio = [f for f in formats if f.get("type", "").startswith("audio/")]
+    if not audio:
+        return None
+    # Prefer opus
+    opus = [f for f in audio if "opus" in f.get("type", "")]
+    if opus:
+        best = max(opus, key=lambda f: int(f.get("bitrate", "0") or 0))
+        return best.get("url")
+    best = max(audio, key=lambda f: int(f.get("bitrate", "0") or 0))
+    return best.get("url")
+
+
+def _best_invidious_video_url(data: dict) -> Optional[str]:
+    """Pick best video URL from Invidious response."""
+    formats = data.get("formatStreams", [])
+    if formats:
+        candidates = [f for f in formats if (int(f.get("resolution", "0p").rstrip("p") or 0)) <= 720]
+        if not candidates:
+            candidates = formats
+        if candidates:
+            best = max(candidates, key=lambda f: int(f.get("resolution", "0p").rstrip("p") or 0))
+            return best.get("url")
+    return _best_invidious_audio_url(data)
+
+
+def _piped_video_info(data: dict, video_id: str) -> dict:
+    """Extract video info dict from Piped response."""
+    return {
+        "title": data.get("title", "Unknown"),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "duration": data.get("duration", 0),
+        "thumbnail": data.get("thumbnailUrl", ""),
+        "channel": data.get("uploader", "Unknown"),
+        "video_id": video_id,
+    }
+
+
+def _invidious_video_info(data: dict, video_id: str) -> dict:
+    """Extract video info dict from Invidious response."""
+    thumbs = data.get("videoThumbnails", [])
+    thumbnail = ""
+    for t in thumbs:
+        if t.get("quality") == "maxresdefault":
+            thumbnail = t.get("url", "")
+            break
+    if not thumbnail and thumbs:
+        thumbnail = thumbs[0].get("url", "")
+
+    return {
+        "title": data.get("title", "Unknown"),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "duration": data.get("lengthSeconds", 0),
+        "thumbnail": thumbnail,
+        "channel": data.get("author", "Unknown"),
+        "video_id": video_id,
+    }
 
 # ── Cookie support ────────────────────────────────────────────────────────────
 _COOKIES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -325,11 +518,41 @@ def _ytdlp_search_sync(query: str, max_results: int = 1) -> Optional[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAM URL EXTRACTION (no download needed)
+# STREAM URL EXTRACTION — Piped/Invidious first, yt-dlp fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def get_audio_stream_url(url: str) -> Optional[str]:
-    """Extract direct audio stream URL (no download)."""
+    """Extract direct audio stream URL (no download).
+
+    Priority: Piped API -> Invidious API -> yt-dlp (fallback).
+    """
+    video_id = _extract_video_id(url)
+
+    # Try Piped first (works on cloud IPs without cookies)
+    if video_id:
+        try:
+            data = await _piped_get_streams(video_id)
+            if data:
+                stream_url = _best_piped_audio_url(data)
+                if stream_url:
+                    LOG.info("Audio stream via Piped for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Piped audio failed for %s", video_id)
+
+        # Try Invidious
+        try:
+            data = await _invidious_get_streams(video_id)
+            if data:
+                stream_url = _best_invidious_audio_url(data)
+                if stream_url:
+                    LOG.info("Audio stream via Invidious for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Invidious audio failed for %s", video_id)
+
+    # Fallback: yt-dlp
+    LOG.info("Proxy APIs failed, trying yt-dlp for audio: %s", url)
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
@@ -341,7 +564,37 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
 
 
 async def get_video_stream_url(url: str) -> Optional[str]:
-    """Extract direct video stream URL (no download)."""
+    """Extract direct video stream URL (no download).
+
+    Priority: Piped API -> Invidious API -> yt-dlp (fallback).
+    """
+    video_id = _extract_video_id(url)
+
+    # Try Piped first
+    if video_id:
+        try:
+            data = await _piped_get_streams(video_id)
+            if data:
+                stream_url = _best_piped_video_url(data)
+                if stream_url:
+                    LOG.info("Video stream via Piped for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Piped video failed for %s", video_id)
+
+        # Try Invidious
+        try:
+            data = await _invidious_get_streams(video_id)
+            if data:
+                stream_url = _best_invidious_video_url(data)
+                if stream_url:
+                    LOG.info("Video stream via Invidious for %s", video_id)
+                    return stream_url
+        except Exception:
+            LOG.debug("Invidious video failed for %s", video_id)
+
+    # Fallback: yt-dlp
+    LOG.info("Proxy APIs failed, trying yt-dlp for video: %s", url)
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
@@ -349,6 +602,36 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         )
     except Exception:
         LOG.exception("Video stream URL extraction failed: %s", url)
+        return None
+
+
+async def get_video_info(url: str) -> Optional[dict]:
+    """Get video metadata. Tries Piped/Invidious first, yt-dlp fallback."""
+    video_id = _extract_video_id(url)
+
+    if video_id:
+        # Try Piped
+        try:
+            data = await _piped_get_streams(video_id)
+            if data and data.get("title"):
+                return _piped_video_info(data, video_id)
+        except Exception:
+            LOG.debug("Piped info failed for %s", video_id)
+
+        # Try Invidious
+        try:
+            data = await _invidious_get_streams(video_id)
+            if data and data.get("title"):
+                return _invidious_video_info(data, video_id)
+        except Exception:
+            LOG.debug("Invidious info failed for %s", video_id)
+
+    # Fallback: yt-dlp
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _get_info_sync, url)
+    except Exception:
+        LOG.exception("Video info extraction failed: %s", url)
         return None
 
 
@@ -417,10 +700,28 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD (fallback)
+# DOWNLOAD — Piped stream URL + aiohttp download, yt-dlp fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def download_audio(url: str) -> Optional[str]:
+    """Download audio. Tries Piped stream URL first, yt-dlp fallback."""
+    video_id = _extract_video_id(url)
+
+    # Try Piped/Invidious stream URL + direct download
+    if video_id:
+        stream_url = await get_audio_stream_url(url)
+        if stream_url:
+            try:
+                filepath = os.path.join(_DOWNLOADS, f"{video_id}.opus")
+                downloaded = await _download_stream(stream_url, filepath)
+                if downloaded:
+                    LOG.info("Audio downloaded via proxy for %s", video_id)
+                    return downloaded
+            except Exception:
+                LOG.debug("Proxy download failed for %s", video_id)
+
+    # Fallback: yt-dlp
+    LOG.info("Proxy download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
         "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
@@ -436,6 +737,24 @@ async def download_audio(url: str) -> Optional[str]:
 
 
 async def download_video(url: str) -> Optional[str]:
+    """Download video. Tries Piped stream URL first, yt-dlp fallback."""
+    video_id = _extract_video_id(url)
+
+    # Try Piped/Invidious stream URL + direct download
+    if video_id:
+        stream_url = await get_video_stream_url(url)
+        if stream_url:
+            try:
+                filepath = os.path.join(_DOWNLOADS, f"{video_id}_video.mp4")
+                downloaded = await _download_stream(stream_url, filepath)
+                if downloaded:
+                    LOG.info("Video downloaded via proxy for %s", video_id)
+                    return downloaded
+            except Exception:
+                LOG.debug("Proxy video download failed for %s", video_id)
+
+    # Fallback: yt-dlp
+    LOG.info("Proxy download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
         "format": "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio[ext=m4a])/best[height<=?720]/best",
@@ -446,12 +765,26 @@ async def download_video(url: str) -> Optional[str]:
     return await _run_ytdlp(url, opts)
 
 
-async def get_video_info(url: str) -> Optional[dict]:
-    loop = asyncio.get_running_loop()
+async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:
+    """Download a stream URL directly via aiohttp."""
     try:
-        return await loop.run_in_executor(None, _get_info_sync, url)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                stream_url,
+                headers=_PROXY_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                import aiofiles
+                async with aiofiles.open(filepath, "wb") as fp:
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        await fp.write(chunk)
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
+            return filepath
+        return None
     except Exception:
-        LOG.exception("Video info extraction failed: %s", url)
+        LOG.debug("Direct stream download failed: %s", stream_url[:80])
         return None
 
 
