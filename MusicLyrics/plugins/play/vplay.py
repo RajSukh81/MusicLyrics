@@ -13,6 +13,7 @@ from pyrogram.types import (
 )
 
 from MusicLyrics.bot import bot
+from MusicLyrics.helpers.filters import not_edited
 from config import Config
 
 from MusicLyrics.plugins.play.queue import (
@@ -137,7 +138,7 @@ async def _resolve_video(query: str, platform: str):
     return yt, filepath
 
 
-@bot.on_message(filters.command(["vplay", "vp"]) & ~filters.edited)
+@bot.on_message(filters.command(["vplay", "vp"]) & not_edited)
 async def vplay_command(client: Client, message: Message):
     """Handle /vplay <query|url> — video streaming."""
     chat_id = message.chat.id

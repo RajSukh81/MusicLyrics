@@ -14,6 +14,7 @@ from pyrogram.types import (
 )
 
 from MusicLyrics.bot import bot
+from MusicLyrics.helpers.filters import not_edited
 from config import Config
 
 from MusicLyrics.plugins.play.queue import (
@@ -174,7 +175,7 @@ async def _resolve_query(query: str, platform: str, msg: Message):
     return yt, filepath
 
 
-@bot.on_message(filters.command(["play", "p"]) & ~filters.edited)
+@bot.on_message(filters.command(["play", "p"]) & not_edited)
 async def play_command(client: Client, message: Message):
     """Handle /play <query|url>."""
     chat_id = message.chat.id

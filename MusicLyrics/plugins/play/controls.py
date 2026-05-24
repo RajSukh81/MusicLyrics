@@ -13,6 +13,7 @@ from pyrogram.types import (
 )
 
 from MusicLyrics.bot import bot
+from MusicLyrics.helpers.filters import not_edited
 from MusicLyrics.plugins.play.queue import (
     get_queue,
     get_current,
@@ -55,7 +56,7 @@ def _control_keyboard() -> InlineKeyboardMarkup:
 
 # ── /pause ───────────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("pause") & ~filters.edited)
+@bot.on_message(filters.command("pause") & not_edited)
 async def pause_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -70,7 +71,7 @@ async def pause_cmd(client: Client, message: Message):
 
 # ── /resume ──────────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("resume") & ~filters.edited)
+@bot.on_message(filters.command("resume") & not_edited)
 async def resume_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -85,7 +86,7 @@ async def resume_cmd(client: Client, message: Message):
 
 # ── /skip | /next ────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command(["skip", "next"]) & ~filters.edited)
+@bot.on_message(filters.command(["skip", "next"]) & not_edited)
 async def skip_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -120,7 +121,7 @@ async def skip_cmd(client: Client, message: Message):
 
 # ── /stop | /end ─────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command(["stop", "end"]) & ~filters.edited)
+@bot.on_message(filters.command(["stop", "end"]) & not_edited)
 async def stop_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -135,7 +136,7 @@ async def stop_cmd(client: Client, message: Message):
 
 # ── /seek <seconds> ──────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("seek") & ~filters.edited)
+@bot.on_message(filters.command("seek") & not_edited)
 async def seek_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -160,7 +161,7 @@ async def seek_cmd(client: Client, message: Message):
 
 # ── /volume <1-200> ──────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command(["volume", "vol"]) & ~filters.edited)
+@bot.on_message(filters.command(["volume", "vol"]) & not_edited)
 async def volume_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
@@ -186,7 +187,7 @@ async def volume_cmd(client: Client, message: Message):
 
 # ── /queue ───────────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("queue") & ~filters.edited)
+@bot.on_message(filters.command("queue") & not_edited)
 async def queue_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     items = await get_queue(chat_id)
@@ -207,7 +208,7 @@ async def queue_cmd(client: Client, message: Message):
 
 # ── /nowplaying | /np ────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command(["nowplaying", "np"]) & ~filters.edited)
+@bot.on_message(filters.command(["nowplaying", "np"]) & not_edited)
 async def nowplaying_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     current = await get_current(chat_id)
@@ -233,7 +234,7 @@ async def nowplaying_cmd(client: Client, message: Message):
 
 # ── /loop ────────────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("loop") & ~filters.edited)
+@bot.on_message(filters.command("loop") & not_edited)
 async def loop_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     state = await toggle_loop(chat_id)
@@ -245,7 +246,7 @@ async def loop_cmd(client: Client, message: Message):
 
 # ── /shuffle ─────────────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("shuffle") & ~filters.edited)
+@bot.on_message(filters.command("shuffle") & not_edited)
 async def shuffle_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     items = await get_queue(chat_id)

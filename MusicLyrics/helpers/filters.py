@@ -53,8 +53,14 @@ async def _private_check(_, __, message: Message) -> bool:
     return message.chat.type == ChatType.PRIVATE
 
 
+async def _not_edited_check(_, __, message: Message) -> bool:
+    """Return True if the message is NOT an edited message."""
+    return not getattr(message, "edit_date", None)
+
+
 sudo_filter = filters.create(_sudo_check, name="SudoFilter")
 admin_filter = filters.create(_admin_check, name="AdminFilter")
 owner_filter = filters.create(_owner_check, name="OwnerFilter")
 group_filter = filters.create(_group_check, name="GroupFilter")
 private_filter = filters.create(_private_check, name="PrivateFilter")
+not_edited = filters.create(_not_edited_check, name="NotEditedFilter")
