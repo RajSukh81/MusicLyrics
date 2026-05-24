@@ -73,6 +73,11 @@ class Config:
     YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
     AI_API_KEY = os.environ.get("AI_API_KEY")
 
+    # ── Proxy for YouTube (essential for cloud deployments like Heroku) ──
+    # Set a residential/datacenter proxy to bypass YouTube IP blocks.
+    # Format: "http://user:pass@host:port" or "socks5://host:port"
+    YOUTUBE_PROXY = os.environ.get("YOUTUBE_PROXY", "")
+
     # ── Playback Defaults ────────────────────────────────────────────────
     DURATION_LIMIT_MIN = int(os.environ.get("DURATION_LIMIT_MIN", 60))
     DOWNLOADS_DIR = os.path.join(

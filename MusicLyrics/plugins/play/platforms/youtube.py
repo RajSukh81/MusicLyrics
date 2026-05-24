@@ -68,6 +68,24 @@ _PROXY_HEADERS = {
     ),
 }
 
+# ── Proxy support for cloud deployments ──────────────────────────────────────
+def _get_proxy() -> Optional[str]:
+    """Get proxy URL from config (essential for Heroku/cloud)."""
+    return Config.YOUTUBE_PROXY or os.environ.get("YOUTUBE_PROXY", "") or None
+
+
+def _aio_session_kwargs() -> dict:
+    """Return kwargs for aiohttp.ClientSession with proxy support."""
+    return {}
+
+
+def _aio_request_kwargs() -> dict:
+    """Return kwargs for aiohttp request methods (get/post) with proxy."""
+    proxy = _get_proxy()
+    if proxy:
+        return {"proxy": proxy}
+    return {}
+
 
 def _extract_video_id(url: str) -> Optional[str]:
     """Extract YouTube video ID from various URL formats."""
@@ -94,6 +112,7 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
                     f"{base_url}/streams/{video_id}",
                     headers=_PROXY_HEADERS,
                     timeout=aiohttp.ClientTimeout(total=15),
+                    **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -121,6 +140,7 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
                     f"{base_url}/api/v1/videos/{video_id}",
                     headers=_PROXY_HEADERS,
                     timeout=aiohttp.ClientTimeout(total=15),
+                    **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -211,6 +231,7 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=20),
+                    **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -471,6 +492,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
                 json=payload,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15),
+                **_aio_request_kwargs(),
             ) as resp:
                 if resp.status != 200:
                     LOG.debug("Innertube WEB+cookies HTTP %d for %s", resp.status, video_id)
@@ -551,6 +573,7 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=15),
+                    **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status != 200:
                         LOG.debug("Innertube player %s HTTP %d for %s",
@@ -788,6 +811,13 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
     cookie = _get_cookie()
     if cookie:
         opts["cookiefile"] = cookie
+
+    # Proxy support — essential for Heroku/cloud deployments
+    proxy = _get_proxy()
+    if proxy:
+        opts["proxy"] = proxy
+        LOG.debug("Using proxy for yt-dlp: %s", proxy[:30])
+
     return opts
 
 
@@ -868,6 +898,7 @@ async def _innertube_search(query: str, limit: int = 5) -> list[dict]:
             json=payload,
             headers=_HEADERS,
             timeout=aiohttp.ClientTimeout(total=15),
+            **_aio_request_kwargs(),
         ) as resp:
             if resp.status != 200:
                 LOG.warning("Innertube search HTTP %d for: %s", resp.status, query)
@@ -1381,6 +1412,7 @@ async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:
                 stream_url,
                 headers=_PROXY_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=180),
+                **_aio_request_kwargs(),
             ) as resp:
                 if resp.status != 200:
                     return None
