@@ -1,8 +1,9 @@
-"""YouTube search and download helpers using youtube-search-python + yt-dlp."""
+"""YouTube search and download helpers using yt-dlp only."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -19,27 +20,37 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # ── Search ───────────────────────────────────────────────────────────────────
 
 async def search_youtube(query: str, max_results: int = 1) -> Optional[dict]:
-    """Search YouTube and return the first result dict.
+    """Search YouTube using yt-dlp and return the first result dict.
 
     Keys: title, url, duration (seconds), thumbnail, channel.
     Returns ``None`` when nothing is found.
     """
     try:
-        from youtubesearchpython.__future__ import VideosSearch
-
-        search = VideosSearch(query, limit=max_results)
-        results = await search.next()
-        if not results or not results.get("result"):
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--dump-json", "--default-search", f"ytsearch{max_results}",
+            "--no-playlist", "--no-download",
+            "--geo-bypass", "--no-check-certificates",
+            "--socket-timeout", "15",
+            query,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0 or not stdout:
+            LOG.warning("yt-dlp search failed: %s", stderr.decode()[:200] if stderr else "no output")
             return None
-        item = results["result"][0]
-        raw_dur = item.get("duration", "0:00")
+
+        info = json.loads(stdout.decode().split("\n")[0])
         return {
-            "title": item.get("title", "Unknown"),
-            "url": item.get("link", ""),
-            "duration": _parse_duration(raw_dur),
-            "thumbnail": _best_thumbnail(item),
-            "channel": item.get("channel", {}).get("name", "Unknown"),
+            "title": info.get("title", "Unknown"),
+            "url": info.get("webpage_url", ""),
+            "duration": int(info.get("duration", 0)),
+            "thumbnail": info.get("thumbnail", ""),
+            "channel": info.get("uploader", info.get("channel", "Unknown")),
         }
+    except asyncio.TimeoutError:
+        LOG.error("YouTube search timed out for: %s", query)
+        return None
     except Exception:
         LOG.exception("YouTube search failed for query: %s", query)
         return None
@@ -48,21 +59,34 @@ async def search_youtube(query: str, max_results: int = 1) -> Optional[dict]:
 async def search_youtube_many(query: str, limit: int = 5) -> list[dict]:
     """Return up to *limit* results."""
     try:
-        from youtubesearchpython.__future__ import VideosSearch
-
-        search = VideosSearch(query, limit=limit)
-        results = await search.next()
-        if not results or not results.get("result"):
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--dump-json", "--default-search", f"ytsearch{limit}",
+            "--no-playlist", "--no-download",
+            "--geo-bypass", "--no-check-certificates",
+            "--socket-timeout", "15",
+            query,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+        if proc.returncode != 0 or not stdout:
             return []
+
         out: list[dict] = []
-        for item in results["result"]:
-            out.append({
-                "title": item.get("title", "Unknown"),
-                "url": item.get("link", ""),
-                "duration": _parse_duration(item.get("duration", "0:00")),
-                "thumbnail": _best_thumbnail(item),
-                "channel": item.get("channel", {}).get("name", "Unknown"),
-            })
+        for line in stdout.decode().strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                info = json.loads(line)
+                out.append({
+                    "title": info.get("title", "Unknown"),
+                    "url": info.get("webpage_url", ""),
+                    "duration": int(info.get("duration", 0)),
+                    "thumbnail": info.get("thumbnail", ""),
+                    "channel": info.get("uploader", info.get("channel", "Unknown")),
+                })
+            except json.JSONDecodeError:
+                continue
         return out
     except Exception:
         LOG.exception("YouTube multi-search failed: %s", query)
@@ -151,29 +175,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     except Exception:
         LOG.exception("yt-dlp download failed: %s", url)
         return None
-
-
-def _parse_duration(raw: str) -> int:
-    """Convert '3:45' or '1:02:30' to total seconds."""
-    if not raw:
-        return 0
-    parts = raw.split(":")
-    try:
-        parts = [int(p) for p in parts]
-    except ValueError:
-        return 0
-    if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    return parts[0] if parts else 0
-
-
-def _best_thumbnail(item: dict) -> str:
-    thumbs = item.get("thumbnails")
-    if thumbs and isinstance(thumbs, list):
-        return thumbs[-1].get("url", "")
-    return ""
 
 
 def is_youtube_url(url: str) -> bool:

@@ -30,6 +30,11 @@ _BANGLA_REPLIES = [
     "গান শুনবে? /play দিয়ে গানের নাম লেখো! 🎵",
     "বোর হচ্ছো? /quiz বা /truth দিয়ে গেম খেলো! 🎮",
     "কিছু জানতে চাইলে জিজ্ঞেস করো! 📖",
+    "আমি সবসময় তোমার জন্য আছি! 💖",
+    "কি বলো? আমি তো বট, কিন্তু তোমার কথা শুনি! 🎧",
+    "গান ছাড়ো! /play দাও! 🎶",
+    "তুমি ভালো মানুষ! আমি জানি! 😊",
+    "হ্যাঁ রে, বলো কী চাই? 🙌",
 ]
 
 _EMOJI_REACTIONS = [
@@ -45,7 +50,11 @@ async def _ai_response(text: str) -> str:
 
     # Try Google Gemini API
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={Config.AI_API_KEY}"
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            "models/gemini-2.0-flash:generateContent"
+            f"?key={Config.AI_API_KEY}"
+        )
         payload = {
             "contents": [
                 {
@@ -89,68 +98,90 @@ async def _ai_response(text: str) -> str:
 async def _try_react(client, message: Message):
     """Try to add a random emoji reaction to the message."""
     try:
-        from pyrogram.types import ReactionTypeEmoji
         emoji = random.choice(_EMOJI_REACTIONS)
-        await client.send_reaction(
-            chat_id=message.chat.id,
-            message_id=message.id,
-            emoji=[ReactionTypeEmoji(emoji=emoji)],
-        )
+        # Try multiple methods for compatibility
+        try:
+            from pyrogram.types import ReactionTypeEmoji
+            await client.send_reaction(
+                chat_id=message.chat.id,
+                message_id=message.id,
+                emoji=[ReactionTypeEmoji(emoji=emoji)],
+            )
+            return
+        except (ImportError, TypeError, AttributeError):
+            pass
+        try:
+            await client.send_reaction(
+                chat_id=message.chat.id,
+                message_id=message.id,
+                emoji=emoji,
+            )
+        except Exception:
+            pass
     except Exception:
-        pass  # Reactions may not be available in all chats
+        pass  # Reactions may not be available
 
 
-@bot.on_message(
-    filters.group
-    & filters.text
-    & filters.reply
-    & ~filters.command
-    & ~filters.bot
-    & ~filters.via_bot,
-    group=50,
-)
-async def ai_reply_when_replied(client, message: Message):
-    """Respond when someone replies to the bot's message in a group."""
+# -- Custom filter: check if message is a reply to the bot --
+async def _is_reply_to_bot(_, client, message: Message) -> bool:
+    """Return True if message is a text reply to the bot's own message."""
+    if not message.text:
+        return False
+    if message.text.startswith("/"):
+        return False
     if not message.reply_to_message:
-        return
-    # Only respond if they are replying to the bot's own message
+        return False
+    if not message.reply_to_message.from_user:
+        return False
     try:
         me = await client.get_me()
-        if message.reply_to_message.from_user and message.reply_to_message.from_user.id == me.id:
-            # Add reaction
-            await _try_react(client, message)
-            # Generate AI response
-            user_text = message.text or ""
-            if not user_text.strip():
-                return
-            response = await _ai_response(user_text)
-            if response:
-                await message.reply_text(response)
+        return message.reply_to_message.from_user.id == me.id
+    except Exception:
+        return False
+
+_reply_to_bot_filter = filters.create(_is_reply_to_bot, name="ReplyToBotFilter")
+
+
+# -- Custom filter: check if bot is @mentioned --
+async def _is_bot_mentioned(_, client, message: Message) -> bool:
+    """Return True if bot's @username appears in the message text."""
+    if not message.text:
+        return False
+    if message.text.startswith("/"):
+        return False
+    try:
+        me = await client.get_me()
+        return f"@{me.username}" in (message.text or "")
+    except Exception:
+        return False
+
+_bot_mentioned_filter = filters.create(_is_bot_mentioned, name="BotMentionedFilter")
+
+
+@bot.on_message(filters.group & _reply_to_bot_filter, group=50)
+async def ai_reply_when_replied(client, message: Message):
+    """Respond when someone replies to the bot's message in a group."""
+    try:
+        await _try_react(client, message)
+        user_text = message.text or ""
+        if not user_text.strip():
+            return
+        response = await _ai_response(user_text)
+        if response:
+            await message.reply_text(response)
     except Exception:
         LOG.exception("AI reply error")
 
 
-@bot.on_message(
-    filters.group
-    & filters.text
-    & filters.mentioned
-    & ~filters.command,
-    group=51,
-)
+@bot.on_message(filters.group & _bot_mentioned_filter, group=51)
 async def ai_reply_when_mentioned(client, message: Message):
     """Respond when the bot is @mentioned in a group."""
     try:
         me = await client.get_me()
-        text = message.text or ""
-        if f"@{me.username}" not in text:
-            return
-        # Remove the @mention from the text
-        clean_text = text.replace(f"@{me.username}", "").strip()
+        clean_text = (message.text or "").replace(f"@{me.username}", "").strip()
         if not clean_text:
             clean_text = "hi"
-        # Add reaction
         await _try_react(client, message)
-        # Generate AI response
         response = await _ai_response(clean_text)
         if response:
             await message.reply_text(response)
@@ -158,16 +189,11 @@ async def ai_reply_when_mentioned(client, message: Message):
         LOG.exception("AI mention reply error")
 
 
-@bot.on_message(
-    filters.private
-    & filters.text
-    & ~filters.command,
-    group=52,
-)
+@bot.on_message(filters.private & filters.text, group=52)
 async def ai_reply_private(client, message: Message):
     """Respond to non-command text messages in private chat."""
     user_text = message.text or ""
-    if not user_text.strip():
+    if not user_text.strip() or user_text.startswith("/"):
         return
     try:
         await _try_react(client, message)
