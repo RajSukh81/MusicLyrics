@@ -9,6 +9,7 @@ from collections import defaultdict
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
 from pyrogram.enums import ChatType, ChatMemberStatus
+from pyrogram.errors import ChatAdminRequired, UserAdminInvalid
 
 from MusicLyrics.bot import bot
 from MusicLyrics.mongo.db import db
@@ -112,6 +113,8 @@ async def gban_watcher(client: Client, message: Message):
             f"ইউজার `{user_id}` গ্লোবালি ব্যান করা আছে।\n"
             f"কারণ / Reason: {gban.get('reason', 'N/A')}"
         )
+    except (ChatAdminRequired, UserAdminInvalid):
+        LOG.debug("GBan enforce skipped in %s: bot is not admin.", message.chat.id)
     except Exception as e:
         LOG.warning("GBan enforce failed in %s: %s", message.chat.id, e)
 
@@ -163,6 +166,8 @@ async def spam_watcher(client: Client, message: Message):
                 f"মিনিটের জন্য মিউট হয়েছে।\n"
                 f"Muted for {MUTE_DURATION // 60} minutes for spamming.",
             )
+        except (ChatAdminRequired, UserAdminInvalid):
+            LOG.debug("Antispam mute skipped in %s: bot is not admin.", chat_id)
         except Exception as e:
             LOG.warning("Antispam mute failed: %s", e)
 

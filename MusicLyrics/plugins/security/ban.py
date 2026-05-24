@@ -9,6 +9,7 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import ChatAdminRequired, UserAdminInvalid
 
 from MusicLyrics.bot import bot
 from MusicLyrics.helpers.decorators import admin_required
@@ -107,6 +108,11 @@ async def ban_cmd(client: Client, message: Message):
             f"কারণ / Reason: {reason}\n"
             f"By: {message.from_user.mention}"
         )
+    except (ChatAdminRequired, UserAdminInvalid):
+        await message.reply_text(
+            "❌ Bot-এর admin অনুমতি নেই! / Bot doesn't have admin rights!\n"
+            "Bot-কে admin বানিয়ে ban permission দিন।"
+        )
     except Exception as e:
         LOG.warning("Ban failed: %s", e)
         await message.reply_text(f"❌ Ban করা যায়নি: {e}")
@@ -139,6 +145,11 @@ async def unban_cmd(client: Client, message: Message):
             f"By: {message.from_user.mention}\n"
             f"ইউজার এখন আবার গ্রুপে যোগ দিতে পারবে।\n"
             f"User can now rejoin the group."
+        )
+    except (ChatAdminRequired, UserAdminInvalid):
+        await message.reply_text(
+            "❌ Bot-এর admin অনুমতি নেই! / Bot doesn't have admin rights!\n"
+            "Bot-কে admin বানিয়ে ban permission দিন।"
         )
     except Exception as e:
         LOG.warning("Unban failed: %s", e)
@@ -216,6 +227,11 @@ async def tban_cmd(client: Client, message: Message):
             f"কারণ / Reason: {reason}\n"
             f"By: {message.from_user.mention}"
         )
+    except (ChatAdminRequired, UserAdminInvalid):
+        await message.reply_text(
+            "❌ Bot-এর admin অনুমতি নেই! / Bot doesn't have admin rights!\n"
+            "Bot-কে admin বানিয়ে ban permission দিন।"
+        )
     except Exception as e:
         LOG.warning("TBan failed: %s", e)
         await message.reply_text(f"❌ Ban করা যায়নি: {e}")
@@ -267,6 +283,11 @@ async def kick_cmd(client: Client, message: Message):
             f"By: {message.from_user.mention}\n\n"
             f"ইউজার আবার গ্রুপে যোগ দিতে পারবে।\n"
             f"User can rejoin the group."
+        )
+    except (ChatAdminRequired, UserAdminInvalid):
+        await message.reply_text(
+            "❌ Bot-এর admin অনুমতি নেই! / Bot doesn't have admin rights!\n"
+            "Bot-কে admin বানিয়ে ban permission দিন।"
         )
     except Exception as e:
         LOG.warning("Kick failed: %s", e)

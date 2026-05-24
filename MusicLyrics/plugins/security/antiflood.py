@@ -9,6 +9,7 @@ from collections import defaultdict
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
 from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import ChatAdminRequired, UserAdminInvalid
 
 from MusicLyrics.bot import bot
 from MusicLyrics.mongo.chats_db import get_chat, update_chat_settings
@@ -146,6 +147,8 @@ async def flood_watcher(client: Client, message: Message):
             f"Flooded and got {action_text}.\n"
             f"Limit: {limit} messages / {FLOOD_WINDOW}s",
         )
+    except (ChatAdminRequired, UserAdminInvalid):
+        LOG.debug("Antiflood action skipped in %s: bot is not admin.", chat_id)
     except Exception as e:
         LOG.warning("Antiflood action failed: %s", e)
 

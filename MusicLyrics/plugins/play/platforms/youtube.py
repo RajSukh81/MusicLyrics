@@ -785,7 +785,11 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
-                "player_skip": ["webpage"],  # Skip webpage player (faster)
+                # NOTE: do NOT set player_skip: ["webpage"] here —
+                # on cloud IPs (Heroku) YouTube returns cipher-protected
+                # stream URLs even for mobile clients. Without the webpage
+                # player yt-dlp cannot decrypt signatures, causing
+                # "Requested format is not available" errors.
             },
         },
         "http_headers": {
@@ -1243,8 +1247,22 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             LOG.warning("Stream URL attempt failed with client %s: %s", combo, exc)
             continue
 
+    # Ultimate fallback: try "b" (best anything) with default client
     if last_err:
-        LOG.exception("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
+        LOG.info("Retrying with permissive format 'b' for: %s", url)
+        try:
+            opts = {**_base_ytdlp_opts(), "format": "b"}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                result = _extract_stream_from_info(info, audio_only)
+                if result:
+                    LOG.info("Stream URL obtained via permissive fallback for %s", url)
+                    return result
+        except Exception as exc2:
+            LOG.warning("Permissive fallback also failed: %s", exc2)
+
+    if last_err:
+        LOG.error("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
     return None
 
 
@@ -1453,7 +1471,7 @@ def _get_info_sync(url: str) -> Optional[dict]:
             continue
 
     if last_err:
-        LOG.exception("All yt-dlp info attempts failed: %s — %s", url, last_err)
+        LOG.error("All yt-dlp info attempts failed: %s — %s", url, last_err)
     return None
 
 
@@ -1503,8 +1521,32 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
             LOG.warning("yt-dlp download attempt failed (client %s): %s", combo, exc)
             continue
 
+    # Ultimate fallback: try "b" format with default client
     if last_err:
-        LOG.exception("All yt-dlp download attempts failed: %s — %s", url, last_err)
+        LOG.info("Retrying download with permissive format 'b' for: %s", url)
+        try:
+            fallback_opts = {**opts, "format": "b"}
+            cookie = _get_cookie()
+            if cookie:
+                fallback_opts["cookiefile"] = cookie
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                )
+                if info:
+                    path = ydl.prepare_filename(info)
+                    if os.path.exists(path):
+                        return path
+                    base = os.path.splitext(path)[0]
+                    matches = sorted(glob.glob(f"{base}.*"),
+                                     key=os.path.getmtime, reverse=True)
+                    if matches:
+                        return matches[0]
+        except Exception as exc2:
+            LOG.warning("Permissive download fallback also failed: %s", exc2)
+
+    if last_err:
+        LOG.error("All yt-dlp download attempts failed: %s — %s", url, last_err)
     return None
 
 
