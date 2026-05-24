@@ -34,18 +34,41 @@ _cookie_files: list[str] = []
 _cookies_loaded = False
 
 
+def _write_env_cookies():
+    """Write cookies from COOKIES_TXT env var to a file (for cloud deploys
+    like Heroku where cookie files can't be committed to git)."""
+    raw = os.environ.get("COOKIES_TXT", "").strip()
+    if not raw:
+        return
+    env_cookie_path = os.path.join(_COOKIES_DIR, "_env_cookies.txt")
+    if os.path.exists(env_cookie_path):
+        return  # already written
+    try:
+        with open(env_cookie_path, "w") as fp:
+            fp.write(raw)
+        LOG.info("Wrote COOKIES_TXT env var to %s", env_cookie_path)
+    except Exception:
+        LOG.exception("Failed to write COOKIES_TXT env var to file")
+
+
 def _load_cookie_files():
     global _cookies_loaded
     if _cookies_loaded:
         return
     _cookies_loaded = True
+    # First, materialise cookies from env var (if set)
+    _write_env_cookies()
     for f in os.listdir(_COOKIES_DIR):
         if f.endswith(".txt"):
             _cookie_files.append(os.path.join(_COOKIES_DIR, f))
     if _cookie_files:
         LOG.info("Loaded %d cookie file(s)", len(_cookie_files))
     else:
-        LOG.info("No cookie files in %s", _COOKIES_DIR)
+        LOG.warning(
+            "No cookie files found. YouTube may block requests on cloud servers. "
+            "Set the COOKIES_TXT env var or add .txt files to %s",
+            _COOKIES_DIR,
+        )
 
 
 def _get_cookie() -> Optional[str]:
@@ -53,21 +76,50 @@ def _get_cookie() -> Optional[str]:
     return random.choice(_cookie_files) if _cookie_files else None
 
 
-def _base_ytdlp_opts() -> dict:
+# ── yt-dlp player client rotation ────────────────────────────────────────────
+# YouTube aggressively blocks "web" and "mweb" on cloud IPs.
+# We try multiple client combos in order of reliability.
+_CLIENT_COMBOS: list[list[str]] = [
+    ["ios", "web"],
+    ["android_vr", "web"],
+    ["tv", "web"],
+    ["web"],
+]
+
+
+def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
+    if client_combo is None:
+        client_combo = _CLIENT_COMBOS[0]
     opts = {
         "quiet": True,
         "no_warnings": True,
         "geo_bypass": True,
+        "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        "socket_timeout": 20,
-        "retries": 3,
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
         "noplaylist": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["mweb", "web"],
+                "player_client": client_combo,
+                "player_skip": ["webpage", "configs"],
             },
         },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
+    # PO token support (if set via env var)
+    po_token = os.environ.get("YT_PO_TOKEN", "").strip()
+    if po_token:
+        opts["extractor_args"]["youtube"]["po_token"] = [po_token]
+
     cookie = _get_cookie()
     if cookie:
         opts["cookiefile"] = cookie
@@ -289,6 +341,42 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         return None
 
 
+def _extract_stream_from_info(info: dict, audio_only: bool) -> Optional[str]:
+    """Extract the best stream URL from yt-dlp info dict."""
+    if not info:
+        return None
+
+    # Direct URL
+    stream_url = info.get("url")
+    if stream_url:
+        return stream_url
+
+    # From requested_formats
+    for fmt_info in info.get("requested_formats", []):
+        if audio_only and fmt_info.get("acodec", "none") != "none":
+            return fmt_info.get("url")
+        if not audio_only and fmt_info.get("vcodec", "none") != "none":
+            return fmt_info.get("url")
+
+    # From all formats
+    formats = info.get("formats", [])
+    if audio_only:
+        audio_fmts = [f for f in formats
+                      if f.get("acodec", "none") != "none"
+                      and f.get("vcodec") in ("none", None)]
+        if audio_fmts:
+            best = max(audio_fmts, key=lambda f: f.get("abr", 0) or 0)
+            return best.get("url")
+    else:
+        video_fmts = [f for f in formats
+                      if f.get("vcodec", "none") != "none"]
+        if video_fmts:
+            best = max(video_fmts, key=lambda f: f.get("height", 0) or 0)
+            return best.get("url")
+
+    return None
+
+
 def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     import yt_dlp
 
@@ -297,47 +385,24 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     else:
         fmt = "best[height<=?720][width<=?1280][ext=mp4]/best[height<=?720]/best"
 
-    opts = {**_base_ytdlp_opts(), "format": fmt}
+    last_err = None
+    for combo in _CLIENT_COMBOS:
+        opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                result = _extract_stream_from_info(info, audio_only)
+                if result:
+                    LOG.info("Stream URL obtained for %s (client: %s)", url, combo)
+                    return result
+        except Exception as exc:
+            last_err = exc
+            LOG.warning("Stream URL attempt failed with client %s: %s", combo, exc)
+            continue
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return None
-
-            # Direct URL
-            stream_url = info.get("url")
-            if stream_url:
-                LOG.info("Stream URL obtained for: %s", url)
-                return stream_url
-
-            # From requested_formats
-            for fmt_info in info.get("requested_formats", []):
-                if audio_only and fmt_info.get("acodec", "none") != "none":
-                    return fmt_info.get("url")
-                if not audio_only and fmt_info.get("vcodec", "none") != "none":
-                    return fmt_info.get("url")
-
-            # From all formats
-            formats = info.get("formats", [])
-            if audio_only:
-                audio_fmts = [f for f in formats
-                              if f.get("acodec", "none") != "none"
-                              and f.get("vcodec") in ("none", None)]
-                if audio_fmts:
-                    best = max(audio_fmts, key=lambda f: f.get("abr", 0) or 0)
-                    return best.get("url")
-            else:
-                video_fmts = [f for f in formats
-                              if f.get("vcodec", "none") != "none"]
-                if video_fmts:
-                    best = max(video_fmts, key=lambda f: f.get("height", 0) or 0)
-                    return best.get("url")
-
-            return None
-    except Exception:
-        LOG.exception("yt-dlp stream URL failed: %s", url)
-        return None
+    if last_err:
+        LOG.exception("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -381,52 +446,82 @@ async def get_video_info(url: str) -> Optional[dict]:
 
 def _get_info_sync(url: str) -> Optional[dict]:
     import yt_dlp
-    opts = {**_base_ytdlp_opts(), "skip_download": True}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return None
-            return {
-                "title": info.get("title", "Unknown"),
-                "url": info.get("webpage_url", url),
-                "duration": int(info.get("duration") or 0),
-                "thumbnail": info.get("thumbnail", ""),
-                "channel": info.get("uploader") or info.get("channel", "Unknown"),
-                "video_id": info.get("id", ""),
-            }
-    except Exception:
-        LOG.exception("yt-dlp info failed: %s", url)
-        return None
+
+    last_err = None
+    for combo in _CLIENT_COMBOS:
+        opts = {**_base_ytdlp_opts(client_combo=combo), "skip_download": True}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    continue
+                return {
+                    "title": info.get("title", "Unknown"),
+                    "url": info.get("webpage_url", url),
+                    "duration": int(info.get("duration") or 0),
+                    "thumbnail": info.get("thumbnail", ""),
+                    "channel": info.get("uploader") or info.get("channel", "Unknown"),
+                    "video_id": info.get("id", ""),
+                }
+        except Exception as exc:
+            last_err = exc
+            LOG.warning("yt-dlp info attempt failed (client %s): %s", combo, exc)
+            continue
+
+    if last_err:
+        LOG.exception("All yt-dlp info attempts failed: %s — %s", url, last_err)
+    return None
 
 
 async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     import yt_dlp
     loop = asyncio.get_running_loop()
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = await loop.run_in_executor(
-                None, lambda: ydl.extract_info(url, download=True)
-            )
-            if not info:
-                return None
-            path = ydl.prepare_filename(info)
-            if os.path.exists(path):
-                return path
-            base = os.path.splitext(path)[0]
-            for ext in (".opus", ".m4a", ".webm", ".mp3", ".ogg",
-                        ".mp4", ".mkv", ".flv"):
-                candidate = base + ext
-                if os.path.exists(candidate):
-                    return candidate
-            matches = sorted(glob.glob(f"{base}.*"),
-                             key=os.path.getmtime, reverse=True)
-            if matches:
-                return matches[0]
-            return None
-    except Exception:
-        LOG.exception("yt-dlp download failed: %s", url)
-        return None
+
+    last_err = None
+    for combo in _CLIENT_COMBOS:
+        run_opts = {**opts}
+        run_opts["extractor_args"] = {
+            "youtube": {
+                "player_client": combo,
+                "player_skip": ["webpage", "configs"],
+            },
+        }
+        # Preserve cookies
+        cookie = _get_cookie()
+        if cookie:
+            run_opts["cookiefile"] = cookie
+        po_token = os.environ.get("YT_PO_TOKEN", "").strip()
+        if po_token:
+            run_opts["extractor_args"]["youtube"]["po_token"] = [po_token]
+
+        try:
+            with yt_dlp.YoutubeDL(run_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                )
+                if not info:
+                    continue
+                path = ydl.prepare_filename(info)
+                if os.path.exists(path):
+                    return path
+                base = os.path.splitext(path)[0]
+                for ext in (".opus", ".m4a", ".webm", ".mp3", ".ogg",
+                            ".mp4", ".mkv", ".flv"):
+                    candidate = base + ext
+                    if os.path.exists(candidate):
+                        return candidate
+                matches = sorted(glob.glob(f"{base}.*"),
+                                 key=os.path.getmtime, reverse=True)
+                if matches:
+                    return matches[0]
+        except Exception as exc:
+            last_err = exc
+            LOG.warning("yt-dlp download attempt failed (client %s): %s", combo, exc)
+            continue
+
+    if last_err:
+        LOG.exception("All yt-dlp download attempts failed: %s — %s", url, last_err)
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

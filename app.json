@@ -90,6 +90,16 @@
       "description": "Maximum song duration in minutes (default: 60)",
       "required": false,
       "value": "60"
+    },
+    "COOKIES_TXT": {
+      "description": "YouTube cookies in Netscape format (paste full content of cookies.txt exported from browser). Prevents 'Sign in to confirm you're not a bot' errors on cloud servers.",
+      "required": false,
+      "value": ""
+    },
+    "YT_PO_TOKEN": {
+      "description": "YouTube PO (Proof of Origin) token for additional bot-detection bypass. Format: visitor_data=TOKEN (optional, advanced).",
+      "required": false,
+      "value": ""
     }
   },
   "formation": {

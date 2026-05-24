@@ -33,3 +33,7 @@ services:
         sync: false
       - key: DURATION_LIMIT_MIN
         sync: false
+      - key: COOKIES_TXT
+        sync: false
+      - key: YT_PO_TOKEN
+        sync: false
