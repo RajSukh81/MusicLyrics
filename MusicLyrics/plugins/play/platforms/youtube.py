@@ -36,12 +36,14 @@ _PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
     "https://pipedapi.r4fo.com",
-    "https://pipedapi.leptons.xyz",
     "https://api.piped.yt",
+    "https://pipedapi.leptons.xyz",
     "https://pipedapi.ngn.tf",
     "https://pipedapi.in.projectsegfau.lt",
     "https://pipedapi.darkness.services",
     "https://pipedapi.drgns.space",
+    "https://pipedapi.simpleprivacy.fr",
+    "https://api.piped.privacydev.net",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -55,6 +57,8 @@ _INVIDIOUS_INSTANCES = [
     "https://iv.datura.network",
     "https://invidious.lunar.icu",
     "https://yt.drgnz.club",
+    "https://vid.puffyan.us",
+    "https://invidious.snopyta.org",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -125,12 +129,12 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/streams/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=20),
                     **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data and data.get("audioStreams"):
+                        if data and (data.get("audioStreams") or data.get("videoStreams")):
                             LOG.info("Piped stream obtained from %s for %s", base_url, video_id)
                             return data
                     else:
@@ -153,7 +157,7 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/api/v1/videos/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=20),
                     **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
@@ -337,31 +341,15 @@ _INNERTUBE_PLAYER_URL = "https://www.youtube.com/youtubei/v1/player"
 
 # Mobile/TV/Web clients that return direct (non-cipher) stream URLs
 # Updated May 2026 with latest client versions to avoid 403/bot detection
+# NOTE: YouTube aggressively blocks cloud IPs. Order matters — most reliable first.
 _PLAYER_CLIENTS = [
+    # ANDROID_TESTSUITE — least blocked, returns direct URLs without cipher
     {
-        "name": "IOS_MUSIC",
+        "name": "ANDROID_TESTSUITE",
         "context": {
             "client": {
-                "clientName": "IOS_MUSIC",
-                "clientVersion": "7.41.2",
-                "deviceMake": "Apple",
-                "deviceModel": "iPhone16,2",
-                "hl": "en",
-                "gl": "US",
-                "osName": "iOS",
-                "osVersion": "18.5",
-                "platform": "MOBILE",
-            }
-        },
-        "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
-        "ua": "com.google.ios.youtubemusic/7.41.2 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X)",
-    },
-    {
-        "name": "ANDROID_VR",
-        "context": {
-            "client": {
-                "clientName": "ANDROID_VR",
-                "clientVersion": "1.65.12",
+                "clientName": "ANDROID_TESTSUITE",
+                "clientVersion": "1.9",
                 "androidSdkVersion": 34,
                 "hl": "en",
                 "gl": "US",
@@ -371,32 +359,53 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-        "ua": "com.google.android.apps.youtube.vr.oculus/1.65.12 (Linux; U; Android 14) gzip",
+        "ua": "com.google.android.youtube/1.9 (Linux; U; Android 14; en_US) gzip",
     },
+    # IOS — reliable for direct stream URLs
     {
         "name": "IOS",
         "context": {
             "client": {
                 "clientName": "IOS",
-                "clientVersion": "20.20.3",
+                "clientVersion": "20.25.2",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
-                "osVersion": "18.5",
+                "osVersion": "18.5.1",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-        "ua": "com.google.ios.youtube/20.20.3 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X)",
+        "ua": "com.google.ios.youtube/20.25.2 (iPhone16,2; U; CPU iOS 18_5_1 like Mac OS X)",
     },
+    # IOS_MUSIC — good for audio streams
+    {
+        "name": "IOS_MUSIC",
+        "context": {
+            "client": {
+                "clientName": "IOS_MUSIC",
+                "clientVersion": "7.45.1",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "hl": "en",
+                "gl": "US",
+                "osName": "iOS",
+                "osVersion": "18.5.1",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
+        "ua": "com.google.ios.youtubemusic/7.45.1 (iPhone16,2; U; CPU iOS 18_5_1 like Mac OS X)",
+    },
+    # ANDROID_MUSIC — alternative mobile music client
     {
         "name": "ANDROID_MUSIC",
         "context": {
             "client": {
                 "clientName": "ANDROID_MUSIC",
-                "clientVersion": "7.36.51",
+                "clientVersion": "7.40.51",
                 "androidSdkVersion": 34,
                 "hl": "en",
                 "gl": "US",
@@ -406,8 +415,27 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-        "ua": "com.google.android.apps.youtube.music/7.36.51 (Linux; U; Android 14) gzip",
+        "ua": "com.google.android.apps.youtube.music/7.40.51 (Linux; U; Android 14) gzip",
     },
+    # ANDROID_VR — low detection rate (deprioritized — YouTube started blocking mid-2025)
+    {
+        "name": "ANDROID_VR",
+        "context": {
+            "client": {
+                "clientName": "ANDROID_VR",
+                "clientVersion": "1.68.05",
+                "androidSdkVersion": 34,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "14",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "ua": "com.google.android.apps.youtube.vr.oculus/1.68.05 (Linux; U; Android 14) gzip",
+    },
+    # TV_EMBEDDED — works for some videos, no cipher needed
     {
         "name": "TV_EMBEDDED",
         "context": {
@@ -422,6 +450,20 @@ _PLAYER_CLIENTS = [
         "key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
         "ua": "Mozilla/5.0 (SMART-TV; Linux; Tizen 7.0)",
         "embed": True,
+    },
+    # MEDIACONNECT — newer client, often bypasses restrictions
+    {
+        "name": "MEDIACONNECT",
+        "context": {
+            "client": {
+                "clientName": "MEDIA_CONNECT_FRONTEND",
+                "clientVersion": "0.1",
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+        "key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     },
 ]
 
@@ -470,11 +512,12 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
     sapisidhash = hashlib.sha1(hash_input.encode()).hexdigest()
     auth_header = f"SAPISIDHASH {timestamp}_{sapisidhash}"
 
+    _web_version = "2.20250523.06.00"
     payload = {
         "context": {
             "client": {
                 "clientName": "WEB",
-                "clientVersion": "2.20250522.01.00",
+                "clientVersion": _web_version,
                 "hl": "en",
                 "gl": "US",
             }
@@ -483,6 +526,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "playbackContext": {
             "contentPlaybackContext": {
                 "html5Preference": "HTML5_PREF_WANTS",
+                "signatureTimestamp": 20180,
             }
         },
         "contentCheckOk": True,
@@ -501,7 +545,8 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "Cookie": cookie_header,
         "Authorization": auth_header,
         "X-Youtube-Client-Name": "1",
-        "X-Youtube-Client-Version": "2.20250522.01.00",
+        "X-Youtube-Client-Version": _web_version,
+        "X-Goog-Visitor-Id": cookies.get("VISITOR_INFO1_LIVE", ""),
     }
 
     api_url = f"{_INNERTUBE_PLAYER_URL}?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
@@ -563,6 +608,7 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
         except Exception:
             LOG.debug("Innertube WEB+cookies failed for %s", video_id)
 
+    # Try all mobile/TV clients (no cookies needed — direct stream URLs)
     for client in _PLAYER_CLIENTS:
         try:
             payload = {
@@ -725,6 +771,9 @@ def _write_env_cookies():
     # Handle escaped newlines (common when setting env vars via CLI)
     if "\\n" in raw and "\n" not in raw:
         raw = raw.replace("\\n", "\n")
+    # Ensure the cookie file starts with proper Netscape header
+    if not raw.startswith("# Netscape HTTP Cookie File") and not raw.startswith("# HTTP Cookie File"):
+        raw = "# Netscape HTTP Cookie File\n# https://curl.haxx.se/docs/http-cookies.html\n# This file was generated automatically.\n\n" + raw
     env_cookie_path = os.path.join(_COOKIES_DIR, "_env_cookies.txt")
     try:
         with open(env_cookie_path, "w") as fp:
@@ -765,17 +814,20 @@ def _get_cookie() -> Optional[str]:
 # Without cookies, mobile/TV clients are tried.
 _CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
     ["web"],                           # Web client — BEST with cookies on cloud
+    ["web_creator"],                   # Creator Studio client — good for restricted
     ["web_music"],                     # YouTube Music web — good with cookies
     ["web_safari"],                    # Safari — cookies help
+    ["ios"],                           # iOS client
     ["ios_music"],                     # iOS Music fallback
-    ["android_vr"],                    # VR client fallback
+    ["mediaconnect"],                  # MediaConnect — newer, less blocked
 ]
 
 _CLIENT_COMBOS_NO_COOKIES: list[list[str]] = [
-    ["ios_music"],                     # Best for cloud — rarely blocked
-    ["android_vr"],                    # VR client — low detection rate
-    ["ios"],                           # iOS client — good for music
+    ["ios"],                           # iOS — best without cookies
+    ["ios_music"],                     # iOS Music — rarely blocked
+    ["mediaconnect"],                  # MediaConnect — newer client
     ["web_music"],                     # YouTube Music web client
+    ["web_creator"],                   # Creator Studio — works without cookies too
     ["tv_embedded"],                   # TV embedded player
     ["mweb"],                          # Mobile web fallback
 ]
@@ -803,6 +855,7 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "fragment_retries": 5,
         "noplaylist": True,
         "check_formats": False,       # CRITICAL: skip format verification on cloud
+        "allow_unplayable_formats": False,
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
             "hasaud",                  # prefer formats with audio
@@ -826,6 +879,8 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
             ),
             "Accept-Language": "en-US,en;q=0.9",
         },
+        # Workaround: skip signature decryption issues
+        "extractor_retries": 3,
     }
     # PO token support (if set via env var)
     # Format: "web+VISITOR_DATA:PO_TOKEN" (yt-dlp 2024.09+ format)
@@ -1273,7 +1328,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             LOG.warning("Stream URL attempt failed with client %s: %s", combo, exc)
             continue
 
-    # Ultimate fallback: try "b" (best anything) with default client
+    # Ultimate fallback 1: try "b" (best anything) with default client
     if last_err:
         LOG.info("Retrying with permissive format 'b' for: %s", url)
         try:
@@ -1286,6 +1341,23 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
                     return result
         except Exception as exc2:
             LOG.warning("Permissive fallback also failed: %s", exc2)
+
+    # Ultimate fallback 2: try with NO format restriction (accept anything)
+    if last_err:
+        LOG.info("Retrying with no format restriction for: %s", url)
+        try:
+            opts = _base_ytdlp_opts()
+            # Remove format entirely — let yt-dlp pick whatever it can
+            opts.pop("format", None)
+            opts["format"] = "worst"  # even worst quality is better than nothing
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                result = _extract_stream_from_info(info, audio_only)
+                if result:
+                    LOG.info("Stream URL obtained via worst-format fallback for %s", url)
+                    return result
+        except Exception as exc3:
+            LOG.warning("Worst-format fallback also failed: %s", exc3)
 
     if last_err:
         LOG.error("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
@@ -1570,6 +1642,30 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
                         return matches[0]
         except Exception as exc2:
             LOG.warning("Permissive download fallback also failed: %s", exc2)
+
+    # Ultimate fallback 2: try "worst" format (any quality, just get something)
+    if last_err:
+        LOG.info("Retrying download with 'worst' format for: %s", url)
+        try:
+            worst_opts = {**opts, "format": "worst"}
+            cookie = _get_cookie()
+            if cookie:
+                worst_opts["cookiefile"] = cookie
+            with yt_dlp.YoutubeDL(worst_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                )
+                if info:
+                    path = ydl.prepare_filename(info)
+                    if os.path.exists(path):
+                        return path
+                    base = os.path.splitext(path)[0]
+                    matches = sorted(glob.glob(f"{base}.*"),
+                                     key=os.path.getmtime, reverse=True)
+                    if matches:
+                        return matches[0]
+        except Exception as exc3:
+            LOG.warning("Worst-format download fallback also failed: %s", exc3)
 
     if last_err:
         LOG.error("All yt-dlp download attempts failed: %s — %s", url, last_err)
