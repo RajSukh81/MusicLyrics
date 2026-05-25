@@ -997,11 +997,11 @@ def _get_cookie() -> Optional[str]:
 # Without cookies, mobile/TV clients are tried.
 _CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
     ["web"],                           # Web client — BEST with cookies on cloud
-    ["web_creator"],                   # Creator Studio client — good for restricted
     ["web_music"],                     # YouTube Music web — good with cookies
-    ["web_safari"],                    # Safari — cookies help
+    ["web_creator"],                   # Creator Studio client — good for restricted
     ["ios"],                           # iOS client
     ["ios_music"],                     # iOS Music fallback
+    ["web_safari"],                    # Safari — cookies help
     ["mediaconnect"],                  # MediaConnect — newer, less blocked
     ["tv"],                            # Smart TV — fewer restrictions
 ]
@@ -1009,6 +1009,7 @@ _CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
 _CLIENT_COMBOS_NO_COOKIES: list[list[str]] = [
     ["ios"],                           # iOS — best without cookies
     ["ios_music"],                     # iOS Music — rarely blocked
+    ["android_vr"],                    # Android VR — less monitored
     ["mediaconnect"],                  # MediaConnect — newer client
     ["tv"],                            # Smart TV — fewer restrictions
     ["web_music"],                     # YouTube Music web client
@@ -1042,8 +1043,11 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "no_color": True,
         "noprogress": True,
         "logger": _ytdlp_logger,
-        "check_formats": "selected",    # Only verify the selected format, not all
-        "allow_unplayable_formats": True,  # Accept formats yt-dlp can't verify on cloud
+        # CRITICAL: Do NOT verify formats from cloud IPs — YouTube returns
+        # valid format lists but blocks actual stream verification requests
+        # from cloud servers, causing "Requested format is not available".
+        "check_formats": False,
+        "allow_unplayable_formats": False,
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
             "proto:m3u8_native",       # prefer HLS (no signature needed)
@@ -1543,7 +1547,6 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             no_proxy_opts = _base_ytdlp_opts()
             no_proxy_opts.pop("proxy", None)  # Force no proxy
             no_proxy_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
-            no_proxy_opts["allow_unplayable_formats"] = True
             no_proxy_opts["check_formats"] = False
             with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -1561,7 +1564,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         try:
             fb_opts = _base_ytdlp_opts()
             fb_opts["format"] = "b"
-            fb_opts["allow_unplayable_formats"] = True
+            fb_opts["check_formats"] = False
             fb_opts.pop("proxy", None)  # Try without proxy for broader compatibility
             with yt_dlp.YoutubeDL(fb_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -1579,7 +1582,6 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             worst_opts = _base_ytdlp_opts()
             worst_opts.pop("proxy", None)  # No proxy
             worst_opts["format"] = "worst"  # even worst quality is better than nothing
-            worst_opts["allow_unplayable_formats"] = True
             worst_opts["check_formats"] = False  # Skip ALL format verification
             with yt_dlp.YoutubeDL(worst_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -1597,7 +1599,6 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             default_opts = _base_ytdlp_opts()
             default_opts.pop("proxy", None)
             default_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
-            default_opts["allow_unplayable_formats"] = True
             default_opts["check_formats"] = False
             # Remove player_client restriction — let yt-dlp decide
             default_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
@@ -1714,6 +1715,12 @@ async def download_audio(url: str) -> Optional[str]:
         "format": "ba*/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
         "overwrites": False,
+        # Convert to a format py-tgcalls can stream reliably
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "opus",
+            "preferredquality": "128",
+        }],
     }
     return await _run_ytdlp(url, opts)
 
@@ -1771,6 +1778,11 @@ async def download_video(url: str) -> Optional[str]:
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "merge_output_format": "mp4",
         "overwrites": False,
+        # Remux to mp4 for py-tgcalls compatibility
+        "postprocessors": [{
+            "key": "FFmpegVideoRemuxer",
+            "preferedformat": "mp4",
+        }],
     }
     return await _run_ytdlp(url, opts)
 
@@ -1795,6 +1807,11 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
             "default_search": "ytsearch",
             "noplaylist": True,
             "overwrites": False,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "opus",
+                "preferredquality": "128",
+            }],
         }
         try:
             def _do_search_dl():
@@ -1854,6 +1871,11 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
             "default_search": "ytsearch",
             "noplaylist": True,
             "overwrites": False,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "opus",
+                "preferredquality": "128",
+            }],
         }
         opts.pop("proxy", None)  # Force no proxy
         try:
@@ -1918,6 +1940,10 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
             "default_search": "ytsearch",
             "noplaylist": True,
             "overwrites": False,
+            "postprocessors": [{
+                "key": "FFmpegVideoRemuxer",
+                "preferedformat": "mp4",
+            }],
         }
         try:
             def _do_search_dl():
@@ -1977,6 +2003,10 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
             "default_search": "ytsearch",
             "noplaylist": True,
             "overwrites": False,
+            "postprocessors": [{
+                "key": "FFmpegVideoRemuxer",
+                "preferedformat": "mp4",
+            }],
         }
         opts.pop("proxy", None)  # Force no proxy
         try:
@@ -2159,6 +2189,7 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
             if cookie:
                 no_proxy_opts["cookiefile"] = cookie
             no_proxy_opts["format"] = "b"  # Most permissive format
+            no_proxy_opts["check_formats"] = False
             with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = await loop.run_in_executor(
                     None, lambda: ydl.extract_info(url, download=True)
@@ -2182,7 +2213,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         LOG.info("Retrying download with permissive format 'b' for: %s", url)
         try:
             fallback_opts = {**opts, "format": "b",
-                             "allow_unplayable_formats": True,
                              "check_formats": False}
             cookie = _get_cookie()
             if cookie:
@@ -2208,7 +2238,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         LOG.info("Retrying download with 'worst' format for: %s", url)
         try:
             worst_opts = {**opts, "format": "worst",
-                          "allow_unplayable_formats": True,
                           "check_formats": False}
             cookie = _get_cookie()
             if cookie:
@@ -2234,7 +2263,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         LOG.info("Retrying download with default client for: %s", url)
         try:
             default_opts = {**opts, "format": "b",
-                            "allow_unplayable_formats": True,
                             "check_formats": False}
             default_opts.pop("proxy", None)
             cookie = _get_cookie()

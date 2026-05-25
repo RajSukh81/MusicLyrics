@@ -1,5 +1,7 @@
 """Start and help commands for MusicLyrics bot."""
 
+import random
+
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -22,8 +24,12 @@ import logging
 
 _LOG = logging.getLogger(__name__)
 
-# Start video URL — shown alongside start photos on /start
-START_VIDEO_URL = "https://files.catbox.moe/2wy9qr.mp4"
+# Start media URLs — randomly chosen on each /start
+_START_MEDIA = [
+    {"type": "video", "url": "https://image-link.edgeone.app/1779745278298-95x0ue.mp4"},
+    {"type": "photo", "url": "https://pic-link-bot.lovable.app/i/telegram-1779340095109-3b9afb55.jpg"},
+    {"type": "photo", "url": "https://pic-link-bot.lovable.app/i/telegram-1779340031479-5eab5504.jpg"},
+]
 
 
 def _start_keyboard():
@@ -172,23 +178,42 @@ async def start_cmd(client, message: Message):
             mention=mention,
             bot_name=Config.BOT_NAME,
         )
-        # Send start photos + video as a media group, then caption with keyboard
+        # Send a randomly chosen start media (photo or video)
+        chosen = random.choice(_START_MEDIA)
         try:
-            media_group = [
-                InputMediaPhoto(Config.START_IMG),
-                InputMediaVideo(START_VIDEO_URL),
-            ]
-            await client.send_media_group(message.chat.id, media_group)
-        except Exception as media_err:
-            _LOG.warning("Could not send start media group: %s", media_err)
-            # Fallback: send photo only
-            try:
-                await message.reply_photo(
-                    photo=Config.START_IMG,
+            if chosen["type"] == "video":
+                await client.send_video(
+                    message.chat.id,
+                    video=chosen["url"],
                     caption="",
                 )
-            except Exception:
-                pass
+            else:
+                await client.send_photo(
+                    message.chat.id,
+                    photo=chosen["url"],
+                    caption="",
+                )
+        except Exception as media_err:
+            _LOG.warning("Could not send start media (%s): %s", chosen["url"], media_err)
+            # Fallback: try another media
+            for fallback in _START_MEDIA:
+                if fallback["url"] != chosen["url"]:
+                    try:
+                        if fallback["type"] == "video":
+                            await client.send_video(
+                                message.chat.id,
+                                video=fallback["url"],
+                                caption="",
+                            )
+                        else:
+                            await client.send_photo(
+                                message.chat.id,
+                                photo=fallback["url"],
+                                caption="",
+                            )
+                        break
+                    except Exception:
+                        continue
         # Send the text + keyboard as a separate message
         try:
             await message.reply_text(
