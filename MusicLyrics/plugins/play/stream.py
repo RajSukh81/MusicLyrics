@@ -200,14 +200,19 @@ async def stream_audio(
                 type(exc).__name__, chat_id,
             )
             try:
-                from MusicLyrics.plugins.play.platforms.youtube import download_audio
+                from MusicLyrics.plugins.play.platforms.youtube import download_audio, search_and_download_audio
                 local_path = await download_audio(media_path)
-                if local_path and os.path.isfile(local_path):
+                if not local_path or not os.path.isfile(str(local_path)):
+                    # download_audio with URL failed, try search+download with title
+                    if title:
+                        LOG.info("URL download failed, trying search+download for: %s", title)
+                        local_path, _ = await search_and_download_audio(title)
+                if local_path and os.path.isfile(str(local_path)):
                     audio = _make_audio_stream(local_path)
                     await _do_play(chat_id, audio)
                     _active_chats.add(chat_id)
                     LOG.info("Streaming audio (downloaded) in %s: %s (%s)",
-                             chat_id, title, local_path[:100])
+                             chat_id, title, str(local_path)[:100])
                     return
             except Exception as dl_exc:
                 LOG.exception("Download fallback also failed in %s: %s",
@@ -247,14 +252,19 @@ async def stream_video(
                 type(exc).__name__, chat_id,
             )
             try:
-                from MusicLyrics.plugins.play.platforms.youtube import download_video
+                from MusicLyrics.plugins.play.platforms.youtube import download_video, search_and_download_video
                 local_path = await download_video(media_path)
-                if local_path and os.path.isfile(local_path):
+                if not local_path or not os.path.isfile(str(local_path)):
+                    # URL download failed, try search+download with title
+                    if title:
+                        LOG.info("Video URL download failed, trying search+download for: %s", title)
+                        local_path, _ = await search_and_download_video(title)
+                if local_path and os.path.isfile(str(local_path)):
                     stream = _make_video_stream(local_path)
                     await _do_play(chat_id, stream)
                     _active_chats.add(chat_id)
                     LOG.info("Streaming video (downloaded) in %s: %s (%s)",
-                             chat_id, title, local_path[:100])
+                             chat_id, title, str(local_path)[:100])
                     return
             except Exception as dl_exc:
                 LOG.exception("Video download fallback also failed in %s: %s",

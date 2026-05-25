@@ -52,6 +52,8 @@ _PIPED_INSTANCES = [
     "https://pipedapi.leptons.xyz",
     "https://pipedapi.darkness.services",
     "https://pipedapi.drgns.space",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://pipedapi.us.projectsegfau.lt",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -63,6 +65,8 @@ _INVIDIOUS_INSTANCES = [
     "https://vid.puffyan.us",
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
+    "https://invidious.privacyredirect.com",
+    "https://inv.n8pjl.ca",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -88,25 +92,44 @@ _PROXY_HEADERS = {
 # Track proxy health — auto-disable proxies that return 402/403/407
 _proxy_dead = False
 _proxy_fail_count = 0
+_proxy_dead_since: float = 0.0  # timestamp when proxy was disabled
 _PROXY_FAIL_THRESHOLD = 2  # Disable after 2 consecutive failures
+_PROXY_RECOVERY_SECONDS = 300  # Re-try proxy every 5 minutes
 
 
 def _mark_proxy_failed():
     """Mark the proxy as potentially dead after a failure."""
-    global _proxy_fail_count, _proxy_dead
+    global _proxy_fail_count, _proxy_dead, _proxy_dead_since
     _proxy_fail_count += 1
     if _proxy_fail_count >= _PROXY_FAIL_THRESHOLD:
         _proxy_dead = True
+        import time as _t
+        _proxy_dead_since = _t.time()
         LOG.warning("Proxy disabled after %d consecutive failures. "
-                    "All requests will go direct. Check your YOUTUBE_PROXY subscription.",
-                    _proxy_fail_count)
+                    "Will auto-retry in %d seconds. "
+                    "Check your YOUTUBE_PROXY subscription.",
+                    _proxy_fail_count, _PROXY_RECOVERY_SECONDS)
 
 
 def _mark_proxy_ok():
     """Reset proxy failure counter on success."""
-    global _proxy_fail_count, _proxy_dead
+    global _proxy_fail_count, _proxy_dead, _proxy_dead_since
     _proxy_fail_count = 0
     _proxy_dead = False
+    _proxy_dead_since = 0.0
+
+
+def _check_proxy_recovery():
+    """Periodically re-enable proxy for retry (subscription might have been renewed)."""
+    global _proxy_dead, _proxy_fail_count, _proxy_dead_since
+    if _proxy_dead and _proxy_dead_since > 0:
+        import time as _t
+        elapsed = _t.time() - _proxy_dead_since
+        if elapsed >= _PROXY_RECOVERY_SECONDS:
+            LOG.info("Proxy recovery: re-enabling proxy for retry after %d seconds", int(elapsed))
+            _proxy_dead = False
+            _proxy_fail_count = 0
+            _proxy_dead_since = 0.0
 
 
 def _get_proxy() -> Optional[str]:
@@ -115,6 +138,7 @@ def _get_proxy() -> Optional[str]:
     Returns None if the proxy has been auto-disabled due to failures
     (e.g., 402 Payment Required = expired subscription).
     """
+    _check_proxy_recovery()  # Re-enable proxy periodically for retry
     if _proxy_dead:
         return None  # Proxy is dead, go direct
 
@@ -171,7 +195,7 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/streams/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -180,6 +204,9 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
                             return data
                     else:
                         LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
+        except asyncio.TimeoutError:
+            LOG.debug("Piped %s timed out for %s", base_url, video_id)
+            continue
         except Exception as e:
             LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
             continue
@@ -201,15 +228,18 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/api/v1/videos/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data and data.get("adaptiveFormats"):
+                        if data and (data.get("adaptiveFormats") or data.get("formatStreams")):
                             LOG.info("Invidious stream obtained from %s for %s", base_url, video_id)
                             return data
                     else:
                         LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
+        except asyncio.TimeoutError:
+            LOG.debug("Invidious %s timed out for %s", base_url, video_id)
+            continue
         except Exception as e:
             LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)
             continue
@@ -273,10 +303,12 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
     """Get stream URL via Cobalt API. Works reliably on cloud servers.
 
     Requires a VALID COBALT_API_KEY env var since Cobalt v10+ (late 2024).
+    If COBALT_API_KEY is not set but COBALT_API_URL is configured
+    (e.g., a self-hosted instance), tries without auth header.
     NOTE: Does NOT use YOUTUBE_PROXY — Cobalt IS the proxy to YouTube.
     """
-    if not _COBALT_API_KEY:
-        LOG.debug("Cobalt API key not set (COBALT_API_KEY), skipping Cobalt.")
+    if not _COBALT_API_KEY and not _cobalt_custom_url:
+        LOG.debug("No Cobalt API key or custom URL set, skipping Cobalt.")
         return None
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -293,8 +325,9 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": _PROXY_HEADERS["User-Agent"],
-                "Authorization": f"Api-Key {_COBALT_API_KEY}",
             }
+            if _COBALT_API_KEY:
+                headers["Authorization"] = f"Api-Key {_COBALT_API_KEY}"
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{instance}/",
@@ -556,6 +589,10 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
     auth_header = f"SAPISIDHASH {timestamp}_{sapisidhash}"
 
     _web_version = "2.20250523.06.00"
+    # Calculate dynamic signatureTimestamp (days since YouTube epoch 2025-01-01
+    # approx — this prevents stale hardcoded values from being rejected)
+    import math, time as _time2
+    _sts = math.floor(_time2.time() / 86400)  # daily rotating timestamp
     payload = {
         "context": {
             "client": {
@@ -569,7 +606,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "playbackContext": {
             "contentPlaybackContext": {
                 "html5Preference": "HTML5_PREF_WANTS",
-                "signatureTimestamp": 20180,
+                "signatureTimestamp": _sts,
             }
         },
         "contentCheckOk": True,
@@ -590,6 +627,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "X-Youtube-Client-Name": "1",
         "X-Youtube-Client-Version": _web_version,
         "X-Goog-Visitor-Id": cookies.get("VISITOR_INFO1_LIVE", ""),
+        "X-Goog-AuthUser": "0",
     }
 
     api_url = f"{_INNERTUBE_PLAYER_URL}?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
@@ -702,8 +740,16 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                                  ps.get("reason", "unknown"))
                         continue
 
-                    # Check for stream URLs
+                    # Check for HLS manifest URL first (no signature needed)
                     sd = data.get("streamingData", {})
+                    hls_url = sd.get("hlsManifestUrl")
+                    if hls_url:
+                        LOG.info("Innertube %s: HLS manifest available for %s",
+                                 client["name"], video_id)
+                        # Store HLS URL in data for extraction
+                        data["_hls_manifest_url"] = hls_url
+                        return data
+
                     all_fmts = sd.get("adaptiveFormats", []) + sd.get("formats", [])
 
                     # Only use formats with direct URL (no signatureCipher)
@@ -726,6 +772,12 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
 
 def _best_innertube_audio(data: dict) -> Optional[str]:
     """Extract best direct audio URL from Innertube player response."""
+    # Check for HLS manifest first (works without signature decryption)
+    hls_url = data.get("_hls_manifest_url")
+    if hls_url:
+        LOG.info("Using HLS manifest URL for audio")
+        return hls_url
+
     sd = data.get("streamingData", {})
 
     # Adaptive audio-only formats
@@ -752,6 +804,12 @@ def _best_innertube_audio(data: dict) -> Optional[str]:
 
 def _best_innertube_video(data: dict) -> Optional[str]:
     """Extract best direct video URL from Innertube player response."""
+    # Check for HLS manifest first (works without signature decryption)
+    hls_url = data.get("_hls_manifest_url")
+    if hls_url:
+        LOG.info("Using HLS manifest URL for video")
+        return hls_url
+
     sd = data.get("streamingData", {})
 
     # Combined formats first (has audio+video — best for VC streaming)
@@ -866,12 +924,14 @@ _CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
     ["ios"],                           # iOS client
     ["ios_music"],                     # iOS Music fallback
     ["mediaconnect"],                  # MediaConnect — newer, less blocked
+    ["tv"],                            # Smart TV — fewer restrictions
 ]
 
 _CLIENT_COMBOS_NO_COOKIES: list[list[str]] = [
     ["ios"],                           # iOS — best without cookies
     ["ios_music"],                     # iOS Music — rarely blocked
     ["mediaconnect"],                  # MediaConnect — newer client
+    ["tv"],                            # Smart TV — fewer restrictions
     ["web_music"],                     # YouTube Music web client
     ["web_creator"],                   # Creator Studio — works without cookies too
     ["tv_embedded"],                   # TV embedded player
@@ -906,6 +966,7 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "allow_unplayable_formats": False,
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
+            "proto:m3u8_native",       # prefer HLS (no signature needed)
             "hasaud",                  # prefer formats with audio
             "source",                  # prefer higher quality source
         ],
@@ -919,6 +980,7 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
                 # "Requested format is not available" errors.
             },
         },
+        "hls_prefer_native": True,  # Use native HLS downloader (more reliable)
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1316,6 +1378,12 @@ def _extract_stream_from_info(info: dict, audio_only: bool) -> Optional[str]:
     if not info:
         return None
 
+    # Check for HLS manifest URL first (works without signature decryption)
+    manifest_url = info.get("manifest_url")
+    if manifest_url and "manifest/hls" in manifest_url:
+        LOG.info("Using HLS manifest URL from yt-dlp info")
+        return manifest_url
+
     # Direct URL
     stream_url = info.get("url")
     if stream_url:
@@ -1390,9 +1458,10 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     if last_err and _get_proxy():
         LOG.info("Retrying stream URL WITHOUT proxy for: %s", url)
         try:
-            opts = {**_base_ytdlp_opts(), "format": "ba*/b" if audio_only else "bv*+ba*/b"}
-            opts.pop("proxy", None)  # Force no proxy
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            no_proxy_opts = _base_ytdlp_opts()
+            no_proxy_opts.pop("proxy", None)  # Force no proxy
+            no_proxy_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
+            with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
                 if result:
@@ -1406,8 +1475,10 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     if last_err:
         LOG.info("Retrying with permissive format 'b' for: %s", url)
         try:
-            opts = {**_base_ytdlp_opts(), "format": "b"}
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            fb_opts = _base_ytdlp_opts()
+            fb_opts["format"] = "b"
+            fb_opts.pop("proxy", None)  # Try without proxy for broader compatibility
+            with yt_dlp.YoutubeDL(fb_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
                 if result:
@@ -1420,11 +1491,10 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     if last_err:
         LOG.info("Retrying with no format restriction for: %s", url)
         try:
-            opts = _base_ytdlp_opts()
-            # Remove format entirely — let yt-dlp pick whatever it can
-            opts.pop("format", None)
-            opts["format"] = "worst"  # even worst quality is better than nothing
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            worst_opts = _base_ytdlp_opts()
+            worst_opts.pop("proxy", None)  # No proxy
+            worst_opts["format"] = "worst"  # even worst quality is better than nothing
+            with yt_dlp.YoutubeDL(worst_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
                 if result:
@@ -1964,9 +2034,11 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         try:
             no_proxy_opts = {**opts}
             no_proxy_opts.pop("proxy", None)
+            # Also remove proxy from any nested opts that _base_ytdlp_opts may have added
             cookie = _get_cookie()
             if cookie:
                 no_proxy_opts["cookiefile"] = cookie
+            no_proxy_opts["format"] = "b"  # Most permissive format
             with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = await loop.run_in_executor(
                     None, lambda: ydl.extract_info(url, download=True)
