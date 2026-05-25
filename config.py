@@ -75,8 +75,36 @@ class Config:
     COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "")
 
     # ── Proxy for YouTube (essential for cloud deployments like Heroku) ──
-    # Single proxy: "http://user:pass@host:port" or "socks5://host:port"
-    YOUTUBE_PROXY = os.environ.get("YOUTUBE_PROXY", "")
+    # Single proxy: supports multiple formats:
+    #   - http://user:pass@host:port  (ready-to-use URL)
+    #   - socks5://host:port          (SOCKS5 proxy)
+    #   - ip:port:user:pass           (Webshare / common format, auto-converted)
+    #   - user:pass@host:port         (auto-prefixed with http://)
+    _YOUTUBE_PROXY_RAW = os.environ.get("YOUTUBE_PROXY", "").strip()
+
+    @staticmethod
+    def _parse_single_proxy(raw: str) -> str:
+        """Parse a single proxy string into a valid http:// URL."""
+        if not raw:
+            return ""
+        # Already a proper URL
+        if raw.startswith("http://") or raw.startswith("https://") or raw.startswith("socks"):
+            return raw
+        # Format: ip:port:user:pass (Webshare style)
+        parts = raw.split(":")
+        if len(parts) == 4:
+            ip, port, user, pw = parts
+            return f"http://{user}:{pw}@{ip}:{port}"
+        # Format: user:pass@host:port (missing scheme)
+        if "@" in raw:
+            return f"http://{raw}"
+        # Format: host:port (no auth)
+        if len(parts) == 2:
+            return f"http://{raw}"
+        # Unknown — try with http prefix
+        return f"http://{raw}"
+
+    YOUTUBE_PROXY: str = _parse_single_proxy(_YOUTUBE_PROXY_RAW)
 
     # Multiple proxy rotation: set YOUTUBE_PROXY_LIST with proxies separated
     # by commas or newlines. Supported formats:

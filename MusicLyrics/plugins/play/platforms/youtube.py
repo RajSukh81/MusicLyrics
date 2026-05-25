@@ -137,17 +137,34 @@ def _get_proxy() -> Optional[str]:
 
     Returns None if the proxy has been auto-disabled due to failures
     (e.g., 402 Payment Required = expired subscription).
+    Always ensures the returned proxy is a valid URL (http://user:pass@host:port).
     """
     _check_proxy_recovery()  # Re-enable proxy periodically for retry
     if _proxy_dead:
         return None  # Proxy is dead, go direct
 
+    proxy = None
     # Priority 1: Proxy list (rotation)
     if Config.YOUTUBE_PROXIES:
         proxy = random.choice(Config.YOUTUBE_PROXIES)
-        return proxy
-    # Priority 2: Single proxy
-    return Config.YOUTUBE_PROXY or os.environ.get("YOUTUBE_PROXY", "") or None
+    else:
+        # Priority 2: Single proxy
+        proxy = Config.YOUTUBE_PROXY or os.environ.get("YOUTUBE_PROXY", "") or None
+
+    # Safety: ensure proxy is a valid URL, not raw ip:port:user:pass format
+    if proxy and not proxy.startswith(("http://", "https://", "socks")):
+        parts = proxy.split(":")
+        if len(parts) == 4:
+            # Webshare format: ip:port:user:pass
+            ip, port, user, pw = parts
+            proxy = f"http://{user}:{pw}@{ip}:{port}"
+            LOG.info("Auto-converted Webshare proxy format to URL: %s", proxy[:40])
+        elif "@" in proxy:
+            proxy = f"http://{proxy}"
+        else:
+            proxy = f"http://{proxy}"
+
+    return proxy if proxy else None
 
 
 def _aio_session_kwargs() -> dict:
