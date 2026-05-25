@@ -154,36 +154,17 @@ def _make_video_stream(media_path: str):
 
 
 async def _do_play(chat_id: int, stream):
-    """Call pytgcalls.play with GroupCallConfig if available.
-
-    Handles ProcessLookupError (ffprobe race condition on cloud servers)
-    by retrying once after a short delay.
-    """
-    max_attempts = 2
-    for attempt in range(1, max_attempts + 1):
+    """Call pytgcalls.play with GroupCallConfig if available."""
+    if _HAS_GROUP_CALL_CONFIG:
         try:
-            if _HAS_GROUP_CALL_CONFIG:
-                try:
-                    await pytgcalls.play(
-                        chat_id, stream,
-                        config=GroupCallConfig(auto_start=True),
-                    )
-                    return
-                except (TypeError, AttributeError) as e:
-                    LOG.debug("play() with GroupCallConfig failed: %s", e)
-            await pytgcalls.play(chat_id, stream)
+            await pytgcalls.play(
+                chat_id, stream,
+                config=GroupCallConfig(auto_start=True),
+            )
             return
-        except ProcessLookupError:
-            if attempt < max_attempts:
-                LOG.warning(
-                    "ProcessLookupError in play() (attempt %d/%d) — "
-                    "ffprobe subprocess race condition. Retrying after 2s...",
-                    attempt, max_attempts,
-                )
-                await asyncio.sleep(2)
-                continue
-            LOG.error("ProcessLookupError persists after %d attempts", max_attempts)
-            raise
+        except (TypeError, AttributeError) as e:
+            LOG.debug("play() with GroupCallConfig failed: %s", e)
+    await pytgcalls.play(chat_id, stream)
 
 
 # -- Public API ---
@@ -199,8 +180,7 @@ async def stream_audio(
     """Join voice chat (if needed) and start audio stream.
 
     media_path can be a local file path or a direct stream URL.
-    If streaming a URL fails with ProcessLookupError (ffprobe race
-    condition on cloud servers), automatically downloads the file
+    If streaming a URL fails, automatically downloads the file
     and retries with the local path.
     """
     if pytgcalls is None:
@@ -212,17 +192,15 @@ async def stream_audio(
         _active_chats.add(chat_id)
         LOG.info("Streaming audio in %s: %s (%s)",
                  chat_id, title, media_path[:100])
-    except ProcessLookupError:
-        # ffprobe failed on stream URL — try downloading and playing local file
+    except Exception as exc:
+        # If stream URL failed, try downloading and playing local file
         if _is_url(media_path):
             LOG.warning(
-                "ProcessLookupError with stream URL in %s — "
-                "downloading file and retrying...", chat_id
+                "%s with stream URL in %s — downloading file and retrying...",
+                type(exc).__name__, chat_id,
             )
             try:
-                from MusicLyrics.plugins.play.platforms.youtube import (
-                    download_audio, _extract_video_id
-                )
+                from MusicLyrics.plugins.play.platforms.youtube import download_audio
                 local_path = await download_audio(media_path)
                 if local_path and os.path.isfile(local_path):
                     audio = _make_audio_stream(local_path)
@@ -234,11 +212,6 @@ async def stream_audio(
             except Exception as dl_exc:
                 LOG.exception("Download fallback also failed in %s: %s",
                              chat_id, dl_exc)
-        raise ProcessLookupError(
-            "ffprobe subprocess failed. Ensure ffmpeg/ffprobe "
-            "is installed and accessible."
-        )
-    except Exception as exc:
         LOG.exception("Failed to stream audio in %s: %s", chat_id, exc)
         raise
 
@@ -254,8 +227,7 @@ async def stream_video(
     """Join voice chat (if needed) and start video stream.
 
     media_path can be a local file path or a direct stream URL.
-    If streaming a URL fails with ProcessLookupError (ffprobe race
-    condition on cloud servers), automatically downloads the file
+    If streaming a URL fails, automatically downloads the file
     and retries with the local path.
     """
     if pytgcalls is None:
@@ -267,17 +239,15 @@ async def stream_video(
         _active_chats.add(chat_id)
         LOG.info("Streaming video in %s: %s (%s)",
                  chat_id, title, media_path[:100])
-    except ProcessLookupError:
-        # ffprobe failed on stream URL — try downloading and playing local file
+    except Exception as exc:
+        # If stream URL failed, try downloading and playing local file
         if _is_url(media_path):
             LOG.warning(
-                "ProcessLookupError with video stream URL in %s — "
-                "downloading file and retrying...", chat_id
+                "%s with video stream URL in %s — downloading file and retrying...",
+                type(exc).__name__, chat_id,
             )
             try:
-                from MusicLyrics.plugins.play.platforms.youtube import (
-                    download_video, _extract_video_id
-                )
+                from MusicLyrics.plugins.play.platforms.youtube import download_video
                 local_path = await download_video(media_path)
                 if local_path and os.path.isfile(local_path):
                     stream = _make_video_stream(local_path)
@@ -289,11 +259,6 @@ async def stream_video(
             except Exception as dl_exc:
                 LOG.exception("Video download fallback also failed in %s: %s",
                              chat_id, dl_exc)
-        raise ProcessLookupError(
-            "ffprobe subprocess failed. Ensure ffmpeg/ffprobe "
-            "is installed and accessible."
-        )
-    except Exception as exc:
         LOG.exception("Failed to stream video in %s: %s", chat_id, exc)
         raise
 

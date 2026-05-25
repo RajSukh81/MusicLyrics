@@ -9,6 +9,45 @@ import sys
 import traceback
 from pathlib import Path
 
+# ── CRITICAL: Monkey-patch asyncio subprocess to fix ProcessLookupError ──
+# py-tgcalls (NTgCalls) uses asyncio subprocesses for ffprobe to analyze
+# media before streaming. On Heroku and other cloud platforms, the ffprobe
+# process often exits before py-tgcalls calls kill() or terminate() on it,
+# raising ProcessLookupError. This is a benign race condition — the process
+# already completed its work successfully. This patch makes kill/terminate
+# safely ignore the already-exited process instead of crashing.
+try:
+    import asyncio.subprocess as _asub
+    _orig_transport_kill = _asub.SubprocessTransport.kill if hasattr(_asub, 'SubprocessTransport') else None
+except (ImportError, AttributeError):
+    _orig_transport_kill = None
+
+# Patch at the base_subprocess level (where the actual kill happens)
+try:
+    from asyncio import base_subprocess as _base_sub
+
+    _orig_base_kill = _base_sub.BaseSubprocessTransport.kill
+    _orig_base_terminate = getattr(_base_sub.BaseSubprocessTransport, 'terminate', None)
+
+    def _safe_kill(self):
+        try:
+            _orig_base_kill(self)
+        except ProcessLookupError:
+            pass  # Process already exited — safe to ignore
+
+    _base_sub.BaseSubprocessTransport.kill = _safe_kill
+
+    if _orig_base_terminate:
+        def _safe_terminate(self):
+            try:
+                _orig_base_terminate(self)
+            except ProcessLookupError:
+                pass
+        _base_sub.BaseSubprocessTransport.terminate = _safe_terminate
+
+except (ImportError, AttributeError):
+    pass  # Older Python — patch not needed or not possible
+
 import aiohttp
 from pyrogram import idle, filters
 from pyrogram.types import Message

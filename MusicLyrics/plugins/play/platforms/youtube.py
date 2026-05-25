@@ -1535,13 +1535,22 @@ async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:
                 **_aio_request_kwargs(),
             ) as resp:
                 if resp.status != 200:
+                    LOG.debug("Stream download HTTP %d for: %s", resp.status, stream_url[:80])
                     return None
                 import aiofiles
+                total_bytes = 0
                 async with aiofiles.open(filepath, "wb") as fp:
                     async for chunk in resp.content.iter_chunked(64 * 1024):
                         await fp.write(chunk)
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
+                        total_bytes += len(chunk)
+        if os.path.exists(filepath) and total_bytes > 1000:
+            LOG.info("Downloaded %d bytes to %s", total_bytes, filepath)
             return filepath
+        LOG.warning("Downloaded file is empty or too small (%d bytes): %s",
+                   total_bytes, stream_url[:80])
+        # Clean up empty file
+        if os.path.exists(filepath):
+            os.remove(filepath)
         return None
     except Exception:
         LOG.debug("Direct stream download failed: %s", stream_url[:80])
