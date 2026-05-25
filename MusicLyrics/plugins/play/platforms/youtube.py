@@ -44,6 +44,7 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Multiple public Piped API instances for redundancy (updated May 2026)
+# Ordered by reliability — most stable instances first
 _PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
@@ -57,9 +58,13 @@ _PIPED_INSTANCES = [
     "https://pipedapi.frontendfriendly.xyz",
     "https://api.piped.privacydev.net",
     "https://pipedapi.ngn.tf",
+    "https://pipedapi.simpleprivacy.fr",
+    "https://pipedapi.moomoo.me",
+    "https://pipedapi.syncpundit.io",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
+# These act as YouTube proxies — no cookies needed
 _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.fdn.fr",
@@ -73,12 +78,17 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.lunar.icu",
     "https://invidious.perennialte.ch",
     "https://inv.us.projectsegfau.lt",
+    "https://invidious.jing.rocks",
+    "https://invidious.einfachzocken.eu",
+    "https://inv.bp.projectsegfau.lt",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
 # Requires API key since late 2024 — set COBALT_API_KEY env var
 _COBALT_INSTANCES = [
     "https://api.cobalt.tools",
+    "https://cobalt-api.kwiatekmiki.com",
+    "https://cobalt.canine.tools",
 ]
 # Allow custom Cobalt instance via env var (e.g., self-hosted)
 _cobalt_custom_url = os.environ.get("COBALT_API_URL", "").strip().rstrip("/")
@@ -216,33 +226,44 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
     """Get stream info from Piped API. Returns dict with audioStreams, videoStreams, etc.
 
     NOTE: Does NOT use YOUTUBE_PROXY — Piped instances ARE the proxy.
-    Sending requests to Piped through another proxy just adds failure points.
+    Uses concurrent requests to multiple instances for speed.
     """
     instances = list(_PIPED_INSTANCES)
     random.shuffle(instances)
 
-    for base_url in instances:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{base_url}/streams/{video_id}",
-                    headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data and (data.get("audioStreams") or data.get("videoStreams")):
-                            LOG.info("Piped stream obtained from %s for %s", base_url, video_id)
-                            return data
-                    else:
-                        LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
-        except asyncio.TimeoutError:
-            LOG.debug("Piped %s timed out for %s", base_url, video_id)
-            continue
-        except Exception as e:
-            LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
-            continue
+    # Try instances in batches of 3 concurrently for speed
+    batch_size = 3
+    for i in range(0, len(instances), batch_size):
+        batch = instances[i:i + batch_size]
+        tasks = [_try_piped_instance(base_url, video_id) for base_url in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, dict) and (result.get("audioStreams") or result.get("videoStreams")):
+                return result
 
+    return None
+
+
+async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
+    """Try a single Piped instance."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{base_url}/streams/{video_id}",
+                headers=_PROXY_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data and (data.get("audioStreams") or data.get("videoStreams")):
+                        LOG.info("Piped stream obtained from %s for %s", base_url, video_id)
+                        return data
+                else:
+                    LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
+    except asyncio.TimeoutError:
+        LOG.debug("Piped %s timed out for %s", base_url, video_id)
+    except Exception as e:
+        LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
     return None
 
 
@@ -250,32 +271,44 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
     """Get stream info from Invidious API.
 
     NOTE: Does NOT use YOUTUBE_PROXY — Invidious instances ARE the proxy.
+    Uses concurrent requests for speed.
     """
     instances = list(_INVIDIOUS_INSTANCES)
     random.shuffle(instances)
 
-    for base_url in instances:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{base_url}/api/v1/videos/{video_id}",
-                    headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data and (data.get("adaptiveFormats") or data.get("formatStreams")):
-                            LOG.info("Invidious stream obtained from %s for %s", base_url, video_id)
-                            return data
-                    else:
-                        LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
-        except asyncio.TimeoutError:
-            LOG.debug("Invidious %s timed out for %s", base_url, video_id)
-            continue
-        except Exception as e:
-            LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)
-            continue
+    # Try instances in batches of 3 concurrently
+    batch_size = 3
+    for i in range(0, len(instances), batch_size):
+        batch = instances[i:i + batch_size]
+        tasks = [_try_invidious_instance(base_url, video_id) for base_url in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, dict) and (result.get("adaptiveFormats") or result.get("formatStreams")):
+                return result
 
+    return None
+
+
+async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict]:
+    """Try a single Invidious instance."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{base_url}/api/v1/videos/{video_id}",
+                headers=_PROXY_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data and (data.get("adaptiveFormats") or data.get("formatStreams")):
+                        LOG.info("Invidious stream obtained from %s for %s", base_url, video_id)
+                        return data
+                else:
+                    LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
+    except asyncio.TimeoutError:
+        LOG.debug("Invidious %s timed out for %s", base_url, video_id)
+    except Exception as e:
+        LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)
     return None
 
 
@@ -334,15 +367,9 @@ def _best_invidious_audio_url(data: dict) -> Optional[str]:
 async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional[str]:
     """Get stream URL via Cobalt API. Works reliably on cloud servers.
 
-    Requires a VALID COBALT_API_KEY env var since Cobalt v10+ (late 2024).
-    If COBALT_API_KEY is not set but COBALT_API_URL is configured
-    (e.g., a self-hosted instance), tries without auth header.
+    Tries with API key first, then without (for self-hosted/open instances).
     NOTE: Does NOT use YOUTUBE_PROXY — Cobalt IS the proxy to YouTube.
     """
-    if not _COBALT_API_KEY and not _cobalt_custom_url:
-        LOG.debug("No Cobalt API key or custom URL set, skipping Cobalt.")
-        return None
-
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
     # Try both v10+ endpoint (POST /) and legacy endpoint (POST /api/json)
@@ -350,87 +377,95 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
 
     for instance in _COBALT_INSTANCES:
         for endpoint in _endpoints:
-            try:
-                # v10+ payload format
-                if endpoint == "/":
-                    payload = {
-                        "url": yt_url,
-                        "downloadMode": "audio" if audio_only else "auto",
-                        "audioFormat": "opus",
-                        "youtubeVideoCodec": "h264",
-                        "videoQuality": "720",
-                    }
-                else:
-                    # Legacy /api/json format
-                    payload = {
-                        "url": yt_url,
-                        "isAudioOnly": audio_only,
-                        "aFormat": "opus",
-                        "vCodec": "h264",
-                        "vQuality": "720",
-                        "filenamePattern": "basic",
-                    }
+            # Try with API key, then without
+            auth_options = []
+            if _COBALT_API_KEY:
+                auth_options.append(_COBALT_API_KEY)
+            auth_options.append(None)  # Also try without auth (some instances are open)
 
-                headers = {
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "User-Agent": _PROXY_HEADERS["User-Agent"],
-                }
-                if _COBALT_API_KEY:
-                    headers["Authorization"] = f"Api-Key {_COBALT_API_KEY}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{instance}{endpoint}",
-                        json=payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=20),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            # v10+ format: {"url": "..."}
-                            stream_url = data.get("url")
-                            if stream_url:
-                                LOG.info("Cobalt stream obtained from %s%s for %s (audio=%s)",
-                                         instance, endpoint, video_id, audio_only)
-                                return stream_url
-                            # Cobalt may return a picker for videos with separate streams
-                            picker = data.get("picker")
-                            if picker and isinstance(picker, list):
-                                for p_item in picker:
-                                    if audio_only and p_item.get("type") == "audio":
-                                        return p_item.get("url")
-                                    if not audio_only and p_item.get("type") == "video":
-                                        return p_item.get("url")
-                                # Fallback: first item
-                                if picker:
-                                    return picker[0].get("url")
-                            # Legacy format: {"status": "stream", "url": "..."}
-                            if data.get("status") in ("stream", "redirect", "success"):
+            for api_key in auth_options:
+                try:
+                    # v10+ payload format
+                    if endpoint == "/":
+                        payload = {
+                            "url": yt_url,
+                            "downloadMode": "audio" if audio_only else "auto",
+                            "audioFormat": "opus",
+                            "youtubeVideoCodec": "h264",
+                            "videoQuality": "720",
+                        }
+                    else:
+                        # Legacy /api/json format
+                        payload = {
+                            "url": yt_url,
+                            "isAudioOnly": audio_only,
+                            "aFormat": "opus",
+                            "vCodec": "h264",
+                            "vQuality": "720",
+                            "filenamePattern": "basic",
+                        }
+
+                    headers = {
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "User-Agent": _PROXY_HEADERS["User-Agent"],
+                    }
+                    if api_key:
+                        headers["Authorization"] = f"Api-Key {api_key}"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{instance}{endpoint}",
+                            json=payload,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=20),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                # v10+ format: {"url": "..."}
                                 stream_url = data.get("url")
                                 if stream_url:
-                                    LOG.info("Cobalt legacy stream from %s for %s",
-                                             instance, video_id)
+                                    LOG.info("Cobalt stream obtained from %s%s for %s (audio=%s, auth=%s)",
+                                             instance, endpoint, video_id, audio_only, bool(api_key))
                                     return stream_url
-                        else:
-                            body = ""
-                            try:
-                                body = await resp.text()
-                            except Exception:
-                                pass
-                            if resp.status in (401, 403):
-                                LOG.warning(
-                                    "Cobalt %s%s returned HTTP %d (auth error) for %s. "
-                                    "Your COBALT_API_KEY may be invalid or expired. "
-                                    "Get a valid key from https://cobalt.tools",
-                                    instance, endpoint, resp.status, video_id,
-                                )
-                                break  # Don't try legacy endpoint with same bad key
+                                # Cobalt may return a picker for videos with separate streams
+                                picker = data.get("picker")
+                                if picker and isinstance(picker, list):
+                                    for p_item in picker:
+                                        if audio_only and p_item.get("type") == "audio":
+                                            return p_item.get("url")
+                                        if not audio_only and p_item.get("type") == "video":
+                                            return p_item.get("url")
+                                    # Fallback: first item
+                                    if picker:
+                                        return picker[0].get("url")
+                                # Legacy format: {"status": "stream", "url": "..."}
+                                if data.get("status") in ("stream", "redirect", "success"):
+                                    stream_url = data.get("url")
+                                    if stream_url:
+                                        LOG.info("Cobalt legacy stream from %s for %s",
+                                                 instance, video_id)
+                                        return stream_url
                             else:
-                                LOG.debug("Cobalt %s%s returned HTTP %d for %s: %s",
-                                          instance, endpoint, resp.status, video_id, body[:100])
-            except Exception as e:
-                LOG.debug("Cobalt %s%s failed for %s: %s", instance, endpoint, video_id, e)
-                continue
+                                body = ""
+                                try:
+                                    body = await resp.text()
+                                except Exception:
+                                    pass
+                                if resp.status in (401, 403):
+                                    LOG.warning(
+                                        "Cobalt %s%s returned HTTP %d (auth error) for %s. "
+                                        "Your COBALT_API_KEY may be invalid or expired. "
+                                        "Get a valid key from https://cobalt.tools",
+                                        instance, endpoint, resp.status, video_id,
+                                    )
+                                    # Try without auth next
+                                    continue
+                                else:
+                                    LOG.debug("Cobalt %s%s returned HTTP %d for %s: %s",
+                                              instance, endpoint, resp.status, video_id, body[:100])
+                except Exception as e:
+                    LOG.debug("Cobalt %s%s failed for %s: %s", instance, endpoint, video_id, e)
+                    continue
     return None
 
 
@@ -1048,6 +1083,8 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         # from cloud servers, causing "Requested format is not available".
         "check_formats": False,
         "allow_unplayable_formats": False,
+        # Accept the FIRST available format rather than checking all
+        "format_sort_force": True,
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
             "proto:m3u8_native",       # prefer HLS (no signature needed)
@@ -1057,11 +1094,8 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
-                # NOTE: do NOT set player_skip: ["webpage"] here —
-                # on cloud IPs (Heroku) YouTube returns cipher-protected
-                # stream URLs even for mobile clients. Without the webpage
-                # player yt-dlp cannot decrypt signatures, causing
-                # "Requested format is not available" errors.
+                # Skip format verification from cloud IPs
+                "formats": ["missing_pot"],
             },
         },
         "hls_prefer_native": True,  # Use native HLS downloader (more reliable)
@@ -1075,6 +1109,9 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         },
         # Workaround: skip signature decryption issues
         "extractor_retries": 3,
+        # IMPORTANT: Don't check certificates on stream URLs
+        # (some Piped/Invidious proxies have self-signed certs)
+        "nocheckcertificate": True,
     }
     # PO token support (if set via env var)
     # Format: "web+VISITOR_DATA:PO_TOKEN" (yt-dlp 2024.09+ format)

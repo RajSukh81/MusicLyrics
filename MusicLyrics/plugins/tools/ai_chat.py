@@ -2,6 +2,7 @@
 
 Uses Google Gemini API with automatic model fallback.
 Properly answers all kinds of questions — factual, conversational, etc.
+Falls back to curated Bengali/English responses when API is unavailable.
 """
 
 import asyncio
@@ -47,40 +48,232 @@ def _get_history(chat_id: int) -> deque:
 
 
 # ── Gemini API models (ordered by preference) ────────────────────────────────
-# Use stable model IDs that are guaranteed to exist on Google's API.
-# The API accepts both versioned and latest aliases.
+# Updated May 2026 — only use model IDs confirmed to exist on Google's API.
+# gemini-1.5-flash and gemini-1.5-flash-8b have been REMOVED (return 404).
 _GEMINI_MODELS = [
     "gemini-2.0-flash-lite",       # Highest free-tier quota, fast
     "gemini-2.0-flash",            # Good quality + speed balance
-    "gemini-1.5-flash",            # Reliable stable fallback
-    "gemini-1.5-flash-8b",         # Smallest, highest quota fallback
+    "gemini-2.0-flash-exp",        # Experimental variant (often available)
+    "gemini-1.5-pro",              # Stable fallback (still supported)
+    "gemini-pro",                  # Legacy but still works on v1beta
 ]
+
+# ── Offline fallback messages ────────────────────────────────────────────────
+# 50+ curated Bengali messages for when AI API is down or unreachable.
+# These provide warm, natural responses so the bot never feels "dead".
+
+_OFFLINE_BANGLA_REPLIES = [
+    "হ্যালো! আমি এখন একটু ব্যস্ত আছি, কিন্তু তোমার কথা শুনছি! একটু পরে আবার চেষ্টা করো।",
+    "কী খবর তোমার? আমার AI সার্ভার এখন একটু রেস্ট নিচ্ছে। একটু পরে আবার কথা বলি!",
+    "আরে! আমি তো আছি তোমার সাথে। এখন একটু সমস্যা হচ্ছে, পরে ঠিক হয়ে যাবে।",
+    "তোমার মেসেজ পেয়েছি! AI একটু ঘুমাচ্ছে এখন। জেগে উঠলেই তোমাকে সুন্দর উত্তর দেবে!",
+    "ওই যে! তুমি এসেছো? দারুণ! কিন্তু এখন সার্ভার একটু slow, পরে আবার ট্রাই করো।",
+    "বন্ধু, তোমার সাথে কথা বলতে ভালো লাগে! এখন AI সার্ভিস একটু বিরতিতে আছে।",
+    "শুভ সময়! আমি MusicLyrics Bot। এই মুহূর্তে AI একটু বিশ্রাম নিচ্ছে, তবে গান শুনতে /play দাও!",
+    "তুমি জানো, আমি কিন্তু শুধু AI না — গানও বাজাতে পারি! /play দিয়ে চেষ্টা করো!",
+    "হ্যাঁ বলো! কী লাগবে? গান লাগলে /play, ভিডিও লাগলে /vplay দাও।",
+    "আমার AI ব্রেইন এখন চার্জ হচ্ছে! ইতিমধ্যে /play দিয়ে একটা গান শোনো!",
+    "কেমন আছো? আশা করি ভালো! আমার সার্ভার একটু ঝামেলা করছে, কিন্তু গান বাজানো চলবে!",
+    "দোস্ত, AI এখন একটু অফলাইন। তবে আমার বাকি সব ফিচার কিন্তু কাজ করছে!",
+    "তোমাকে দেখে খুব ভালো লাগলো! এখন AI সেবা সাময়িক বন্ধ, একটু পরে আবার আসো।",
+    "ভাই/বোন, AI একটু ডাউন আছে। কিন্তু চিন্তা করো না, শীঘ্রই ঠিক হয়ে যাবে!",
+    "মজার কথা বলতে পারতাম কিন্তু AI সার্ভার এখন একটু মুড অফ! পরে আবার এসো।",
+    "তুমি কি গান শুনতে চাও? /play দিয়ে তোমার favourite গান বাজাও!",
+    "AI একটু বিরতিতে আছে, কিন্তু আমি তো আছি! কী সাহায্য লাগবে?",
+    "এই মুহূর্তে AI respond করতে পারছে না। /help দিয়ে আমার সব কমান্ড দেখো!",
+    "সার্ভার মেইনটেন্যান্স চলছে। একটু ধৈর্য ধরো, শীঘ্রই ফিরে আসবো!",
+    "তোমার প্রশ্ন পেয়েছি! কিন্তু এখন AI ইঞ্জিন একটু বিশ্রামে। পরে আবার জিজ্ঞেস করো।",
+    "দারুণ প্রশ্ন! কিন্তু আমার AI মস্তিষ্ক এখন রিচার্জ হচ্ছে। একটু পরে আবার চেষ্টা করো!",
+    "আমি MusicLyrics Bot — গান, গেম, আর চ্যাট সব পারি! এখন AI একটু রেস্টে।",
+    "তোমাকে সুন্দর উত্তর দিতাম, কিন্তু AI সার্ভার একটু সমস্যায় আছে। Sorry!",
+    "হেই! আমি এখানে আছি। AI সাময়িকভাবে unavailable, কিন্তু /play দিয়ে গান চালু করো!",
+    "চিন্তা করো না! AI সার্ভার একটু পরেই ঠিক হয়ে যাবে। ততক্ষণ /quiz খেলো!",
+    "তোমার সাথে আড্ডা দিতে ভালোই লাগে! কিন্তু AI এখন একটু ব্রেক নিচ্ছে।",
+    "দুঃখিত! এখন AI respond করতে পারছে না। তবে বাকি সব কমান্ড ঠিকঠাক কাজ করছে!",
+    "ও মাই! AI একটু মুড অফ আছে আজকে। কিন্তু গান বাজাতে কোনো সমস্যা নেই!",
+    "তোমার জন্য দোয়া করি! AI সার্ভার শীঘ্রই ঠিক হবে। ততক্ষণ /truth or /dare খেলো!",
+    "বন্ধু, প্রযুক্তি মাঝে মাঝে বিশ্রাম নেয়। AI একটু পরে আবার কাজ শুরু করবে!",
+    "হ্যাঁরে! কী করছো? AI একটু slow আছে আজকে। কিন্তু আমি তো আছি!",
+    "তোমার মেসেজ important! AI ঠিক হলেই উত্তর দেবো। ততক্ষণ /song দিয়ে গান ডাউনলোড করো!",
+    "ভালোবাসা রইলো! AI সার্ভার একটু down, কিন্তু তোমার পাশে সবসময় আছি।",
+    "আমি জানি তুমি ভালো উত্তর চাও! AI ঠিক হলে সুন্দর করে উত্তর দেবো, promise!",
+    "কিছুক্ষণের মধ্যে AI আবার কাজ করবে। ততক্ষণ /flip দিয়ে coin toss করো!",
+    "তোমার ধৈর্যের জন্য ধন্যবাদ! AI service একটু পরেই restore হবে।",
+    "এখন AI একটু অফলাইন, কিন্তু গান বাজানো, গেম খেলা সব চলবে!",
+    "সবকিছু ঠিক আছে! শুধু AI সার্ভিস একটু slow। একটু wait করো।",
+    "আমি MusicLyrics — তোমার বিশ্বস্ত music bot! AI পরে আসবে, এখন গান শোনো!",
+    "প্রিয় বন্ধু, AI সার্ভার maintenance চলছে। /play দিয়ে মনটা ভালো করো!",
+    "তোমার প্রশ্নের উত্তর দিতে পারলে ভালো লাগতো! AI একটু পরে ফিরবে।",
+    "জানো কি? /ttt দিয়ে Tic-Tac-Toe খেলতে পারো! AI ঠিক না হওয়া পর্যন্ত!",
+    "একটু সমস্যা হচ্ছে AI তে। তবে /dice দিয়ে luck try করো!",
+    "AI সার্ভার একটু tired আজকে। /sticker কমান্ড দিয়ে মজা করো!",
+    "সময়টা একটু কঠিন AI এর জন্য! কিন্তু /tr দিয়ে translate করতে পারো!",
+    "আমি শুনছি তোমার কথা! AI ফিরে এলেই সুন্দর উত্তর পাবে।",
+    "তোমার জন্য সবসময় ready আছি! AI server একটু rest নিচ্ছে শুধু।",
+    "মন খারাপ? /play Arijit Singh দিয়ে গান শোনো! AI পরে কথা বলবে।",
+    "এই bot এ অনেক কিছু আছে! /help দিয়ে explore করো!",
+    "AI temporarily unavailable. কিন্তু music, games, tools সব কাজ করছে!",
+    "তুমি awesome! AI একটু পরে তোমার সাথে কথা বলবে। Promise!",
+    "সবুর করো, ফল মিঠা হবে! AI server শীঘ্রই ফিরছে।",
+    "হাসতে থাকো, গান শোনো! AI repair হচ্ছে, চিন্তা নেই!",
+    "তোমার message পড়েছি! AI fix হলেই reply দেবো। Love you!",
+    "Bot alive আছে, চিন্তা নেই! শুধু AI brain একটু nap নিচ্ছে।",
+    "এক মিনিট! AI server reconnect হচ্ছে। একটু patience please!",
+]
+
+_OFFLINE_ENGLISH_REPLIES = [
+    "Hey there! My AI brain is taking a quick nap. Try again in a bit!",
+    "I'm here for you! AI server is temporarily unavailable, but music still works! Try /play",
+    "Oops! AI is on a coffee break right now. Meanwhile, check /help for all my features!",
+    "Hello! AI service is briefly down. But I can still play music — try /play!",
+    "My AI engine is recharging. In the meantime, play some music with /play!",
+    "Sorry, AI is temporarily offline. Try /quiz or /truth for some fun!",
+    "AI server maintenance in progress. I'll be back smarter than ever!",
+    "Can't process AI requests right now. Try /song to download music!",
+    "Hey! AI is having a moment. But all other features work perfectly!",
+    "AI will be back soon! Meanwhile, try /play to enjoy some music!",
+]
+
+# Smart keyword-based offline responses
+_OFFLINE_KEYWORD_RESPONSES = {
+    # Greetings
+    "greetings": {
+        "keywords": ["hi", "hello", "hey", "হ্যালো", "হাই", "নমস্কার", "আসসালামু", "সুপ্রভাত", "শুভ"],
+        "bn": [
+            "হ্যালো! কেমন আছো? আমি MusicLyrics Bot! তোমাকে সাহায্য করতে পারি — /help দাও!",
+            "নমস্কার! তোমাকে দেখে ভালো লাগলো! কী সাহায্য করতে পারি?",
+            "হ্যালো বন্ধু! আমি এখানে আছি তোমার জন্য! কী চাই বলো?",
+            "আসসালামু আলাইকুম! কেমন আছেন? কিছু দরকার হলে বলুন!",
+        ],
+        "en": [
+            "Hello! I'm MusicLyrics Bot. How can I help you? Try /help!",
+            "Hey there! Nice to see you! What can I do for you?",
+            "Hi! I'm here to help with music, games, and more!",
+        ],
+    },
+    # Music related
+    "music": {
+        "keywords": ["গান", "song", "music", "play", "বাজাও", "শোনাও", "গানটা", "মিউজিক"],
+        "bn": [
+            "গান শুনতে চাও? /play দিয়ে গানের নাম লেখো! যেমন: /play তুমি হি হো",
+            "গান বাজাতে /play কমান্ড ব্যবহার করো! ভিডিও সহ চাইলে /vplay দাও!",
+            "মিউজিক শুনতে চাও? /play <গানের নাম> দাও! ডাউনলোড করতে /song দাও!",
+        ],
+        "en": [
+            "Want to play music? Use /play <song name>! For video: /vplay",
+            "Try /play to stream music in voice chat, or /song to download!",
+        ],
+    },
+    # Bot info
+    "bot_info": {
+        "keywords": ["কে তুমি", "who are you", "তোমার নাম", "your name", "কি পারো", "what can you"],
+        "bn": [
+            "আমি MusicLyrics Bot! আমি গান বাজাতে পারি, গেম খেলতে পারি, চ্যাট করতে পারি! /help দাও!",
+            "আমার নাম MusicLyrics Bot। আমি RajSukh এর তৈরি। গান, গেম, AI চ্যাট সব পারি!",
+        ],
+        "en": [
+            "I'm MusicLyrics Bot, created by RajSukh! I can play music, games, and chat with AI!",
+            "I'm a multi-feature Telegram bot — music streaming, games, security tools, and more!",
+        ],
+    },
+    # Thanks
+    "thanks": {
+        "keywords": ["ধন্যবাদ", "thanks", "thank you", "thx", "ty", "শুকরিয়া"],
+        "bn": [
+            "তোমাকেও ধন্যবাদ! তোমার সাথে কথা বলে ভালো লাগলো!",
+            "স্বাগতম! আবার কিছু লাগলে বলো!",
+            "কিছু না! তোমার জন্য সবসময় আছি!",
+        ],
+        "en": [
+            "You're welcome! Happy to help!",
+            "No problem! Let me know if you need anything else!",
+        ],
+    },
+    # Help
+    "help": {
+        "keywords": ["help", "সাহায্য", "কমান্ড", "command", "কি করতে পারো"],
+        "bn": [
+            "আমার সব কমান্ড দেখতে /help দাও! গান, গেম, AI চ্যাট সব আছে!",
+            "/help দাও — সব কমান্ডের লিস্ট দেখতে পাবে! গান বাজাতে /play দাও!",
+        ],
+        "en": [
+            "Use /help to see all commands! I can play music, games, and more!",
+            "Try /help for the full command list! Music: /play, Games: /quiz, /ttt",
+        ],
+    },
+}
+
+
+def _detect_language(text: str) -> str:
+    """Detect if text is primarily Bengali or English."""
+    bengali_chars = sum(1 for c in text if '\u0980' <= c <= '\u09FF')
+    return "bn" if bengali_chars > len(text) * 0.2 else "en"
+
+
+def _get_keyword_response(text: str) -> Optional[str]:
+    """Try to match keywords for a smart offline response."""
+    text_lower = text.lower()
+    lang = _detect_language(text)
+
+    for category, data in _OFFLINE_KEYWORD_RESPONSES.items():
+        for kw in data["keywords"]:
+            if kw.lower() in text_lower:
+                responses = data.get(lang, data.get("bn", []))
+                if responses:
+                    return random.choice(responses)
+    return None
+
+
+def _get_offline_response(text: str) -> str:
+    """Get a smart offline response — keyword match first, then random."""
+    # Try keyword-based response first
+    kw_resp = _get_keyword_response(text)
+    if kw_resp:
+        return kw_resp
+
+    # Fall back to random message based on detected language
+    lang = _detect_language(text)
+    if lang == "en":
+        return random.choice(_OFFLINE_ENGLISH_REPLIES)
+    return random.choice(_OFFLINE_BANGLA_REPLIES)
+
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = (
-    "You are MusicLyrics Bot — a smart, friendly, and helpful Telegram bot.\n\n"
-    "IMPORTANT RULES:\n"
-    "1. You MUST answer ALL questions properly and accurately. If someone asks "
-    "'What is Python?', answer it correctly. If someone asks a math question, "
-    "solve it. If someone asks about history, science, or anything, give the "
-    "correct answer. You are a KNOWLEDGEABLE assistant.\n"
-    "2. Match the user's language — if they write in Bengali (বাংলা), reply in "
-    "Bengali. If English, reply in English. If mixed, reply in mixed.\n"
+    "You are MusicLyrics Bot — a smart, friendly, witty, and extremely helpful "
+    "Telegram bot created by RajSukh.\n\n"
+    "CRITICAL RULES — FOLLOW STRICTLY:\n"
+    "1. You MUST answer ALL questions properly, accurately, and completely. "
+    "Whether it's about Python, math, history, science, geography, current "
+    "affairs, coding, relationships, philosophy, or anything else — give the "
+    "CORRECT answer. You are a KNOWLEDGEABLE and INTELLIGENT assistant.\n"
+    "2. LANGUAGE MATCHING is MANDATORY:\n"
+    "   - If the user writes in Bengali (বাংলা), you MUST reply in Bengali.\n"
+    "   - If the user writes in English, reply in English.\n"
+    "   - If mixed, reply in mixed.\n"
+    "   - NEVER reply in English when the user writes in Bengali.\n"
     "3. Keep replies concise (1-5 sentences) but COMPLETE and CORRECT.\n"
-    "4. Be warm and friendly — like a smart friend chatting.\n"
-    "5. Use emojis naturally but sparingly.\n"
+    "4. Be warm, friendly, witty, and engaging — like a smart best friend.\n"
+    "5. Use emojis naturally but sparingly (1-3 per message max).\n"
     "6. If asked about your features or commands, mention:\n"
     "   - /play <song> — Play music in voice chat\n"
     "   - /vplay <song> — Play video in voice chat\n"
     "   - /song <query> — Download song\n"
+    "   - /vsong <query> — Download video\n"
     "   - /pause, /resume, /skip, /stop — Playback controls\n"
+    "   - /queue, /np, /loop, /shuffle — Queue management\n"
     "   - /quiz, /truth, /dare, /ttt, /flip, /dice — Games\n"
     "   - /tr, /tts, /sticker, /info — Tools\n"
-    "7. You are created by RajSukh (Owner).\n"
+    "7. You are created by RajSukh (Owner). Be proud of it!\n"
     "8. NEVER refuse to answer a question. Always try your best.\n"
     "9. For questions you genuinely don't know, say so honestly but suggest "
     "where to find the answer.\n"
-    "10. Do NOT give generic filler responses. Every reply should be meaningful.\n"
+    "10. Do NOT give generic filler responses. Every reply must be meaningful "
+    "and add value.\n"
+    "11. If someone is sad, cheer them up. If someone is happy, celebrate with them.\n"
+    "12. You can handle adult topics maturely without being inappropriate.\n"
+    "13. Be helpful with coding questions — provide actual code examples.\n"
+    "14. For math questions, show step-by-step solutions when appropriate.\n"
 )
 
 
@@ -88,8 +281,8 @@ async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
     """Get AI response from Gemini API with model fallback."""
 
     if not Config.AI_API_KEY:
-        LOG.warning("AI_API_KEY not set — cannot generate AI response")
-        return "AI API key সেট করা নেই। Owner-কে বলো AI_API_KEY সেট করতে।"
+        LOG.warning("AI_API_KEY not set — using offline response")
+        return _get_offline_response(text)
 
     history = _get_history(chat_id)
 
@@ -105,12 +298,9 @@ async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
         if error:
             last_error = error
 
-    # All models failed
+    # All models failed — use smart offline response
     LOG.error("All Gemini models failed for chat %s. Last error: %s", chat_id, last_error)
-    return (
-        "দুঃখিত, এই মুহূর্তে AI সার্ভারে সমস্যা হচ্ছে। "
-        "একটু পরে আবার চেষ্টা করো! 🙏"
-    )
+    return _get_offline_response(text)
 
 
 async def _try_gemini(
@@ -122,6 +312,7 @@ async def _try_gemini(
     Returns (reply, error_msg). reply is None on failure.
     """
 
+    # Try v1beta first (supports newer models), fall back to v1
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent"
