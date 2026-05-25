@@ -1,7 +1,7 @@
-"""AI chatbot plugin -- replies to group messages intelligently.
+"""AI chatbot plugin -- replies to messages intelligently.
 
-Uses Google Gemini API with automatic model fallback and smart
-context-aware local replies when API quota is exhausted.
+Uses Google Gemini API with automatic model fallback.
+Properly answers all kinds of questions — factual, conversational, etc.
 """
 
 import asyncio
@@ -24,20 +24,20 @@ from config import Config
 LOG = logging.getLogger(__name__)
 
 # ── Conversation history per chat ─────────────────────────────────────────────
-_MAX_HISTORY = 20  # Increased for better context
+_MAX_HISTORY = 20
 _chat_histories: dict[int, deque] = {}
 
-# ── Track recent replies to avoid repetition ──────────────────────────────────
-_MAX_RECENT = 30
-_recent_replies: dict[int, deque] = {}
-
 # ── API rate limit tracking ───────────────────────────────────────────────────
-# Per-model cooldown: different models have different quotas
-_model_cooldown_until: dict[str, float] = {}  # model -> timestamp
-_API_COOLDOWN_SECONDS = 60   # wait 60s after a 429 before retrying
-_API_COOLDOWN_BACKOFF = 1.5  # multiply cooldown on repeated 429s
-_model_cooldown_multiplier: dict[str, float] = {}  # model -> current multiplier
-_MAX_COOLDOWN_MULTIPLIER = 4.0  # max 60*4 = 240s cooldown
+_model_cooldown_until: dict[str, float] = {}
+_API_COOLDOWN_SECONDS = 60
+_API_COOLDOWN_BACKOFF = 1.5
+_model_cooldown_multiplier: dict[str, float] = {}
+_MAX_COOLDOWN_MULTIPLIER = 4.0
+
+_EMOJI_REACTIONS = [
+    "\U0001f44d", "\u2764\ufe0f", "\U0001f525", "\U0001f60d",
+    "\U0001f929", "\U0001f44f", "\U0001f601", "\U0001f60e",
+]
 
 
 def _get_history(chat_id: int) -> deque:
@@ -46,238 +46,153 @@ def _get_history(chat_id: int) -> deque:
     return _chat_histories[chat_id]
 
 
-def _get_recent(chat_id: int) -> deque:
-    if chat_id not in _recent_replies:
-        _recent_replies[chat_id] = deque(maxlen=_MAX_RECENT)
-    return _recent_replies[chat_id]
-
-
-# ── Context-aware reply categories ────────────────────────────────────────────
-_GREETINGS = [
-    "হ্যালো! কেমন আছো? আমি MusicLyrics Bot! 😊",
-    "হাই! কী খবর? কিছু লাগলে বলো! 🎵",
-    "স্বাগতম! আমি তোমার মিউজিক বট! কী দরকার বলো! 🎶",
-    "হ্যাঁ বলো! কী সাহায্য করতে পারি? 😄",
-    "নমস্কার! আজকে কী শুনবে? /play দাও! 🎧",
-]
-
-_MUSIC_RESPONSES = [
-    "গান শুনতে চাও? /play দিয়ে গানের নাম লেখো! 🎵",
-    "অবশ্যই! /play <গানের নাম> দিয়ে চেষ্টা করো! 🎶",
-    "ভিডিও সহ শুনতে চাইলে /vplay ব্যবহার করো! 🎬",
-    "গান ডাউনলোড করতে /song <নাম> দাও! 📥",
-    "/play দাও, আমি তোমার জন্য বাজাবো! 🎤",
-]
-
-_FUN_RESPONSES = [
-    "গেম খেলবে? /quiz বা /truth চেষ্টা করো! 🎮",
-    "বোর হচ্ছো? /ttt দিয়ে টিক-ট্যাক-টো খেলো! 🎯",
-    "/dare দাও, মজা করো! 😂",
-    "/flip দিয়ে কয়েন টস করো! 🪙",
-    "/dice দিয়ে ডাইস গড়াও! 🎲",
-]
-
-_THANKS_RESPONSES = [
-    "ধন্যবাদ তোমাকেও! 😊",
-    "স্বাগতম! আরো কিছু লাগলে বলো! 💖",
-    "কোনো ব্যাপার না! আমি তো তোমার জন্যই! 🤖",
-    "আনন্দিত হলাম সাহায্য করতে পেরে! 🙌",
-    "ইউ আর ওয়েলকাম! 🎵",
-]
-
-_GENERAL_REPLIES = [
-    "হ্যাঁ ভাই, বলো কী হেল্প লাগবে? 😄",
-    "আমি শুনছি! কী দরকার বলো? 🎵",
-    "বলো বলো, আমি আছি! 😊",
-    "কী খবর? কিছু লাগলে বলো! 🎶",
-    "হুম, বুঝেছি! আর কিছু? 🤔",
-    "ঠিক আছে ভাই! 👍",
-    "আচ্ছা আচ্ছা, তারপর? 😏",
-    "ওকে বস! কিছু দরকার হলে বলো! 💪",
-    "তুমি তো দারুণ! 🔥",
-    "আমি তোমার বট, যা বলবে করব! 🤖",
-    "কিছু জানতে চাইলে জিজ্ঞেস করো! 📖",
-    "আমি সবসময় তোমার জন্য আছি! 💖",
-    "হ্যাঁ ভাই, আমি রেডি! কী করবো বলো! 🚀",
-    "দারুণ! আরো কিছু বলো! 🌟",
-    "আমি AI বট, কিন্তু তোমার ভালো বন্ধু! 🤝",
-    "ওহো! সেটা তো ইন্টারেস্টিং! 🧐",
-    "চলো কিছু মজার কাজ করি! 🎉",
-    "কোনো প্রশ্ন থাকলে নির্দ্বিধায় জিজ্ঞেস করো! ✋",
-    "আমি ২৪/৭ অনলাইন আছি তোমার জন্য! ⏰",
-    "আজকে কেমন আছো? আমি তো সবসময়ই ভালো! 😎",
-    "তোমার সাথে কথা বলে মজা লাগছে! 😁",
-    "আরে বাহ! তুমি তো ভালোই বলেছো! 👏",
-    "একটু অপেক্ষা করো, ভাবছি... 🤔💭",
-    "ও আচ্ছা! বুঝলাম বুঝলাম! 💡",
-    "হাহা সেটা মজার ছিল! 😆",
-    "তোমার জন্য কী করতে পারি আজকে? 🎁",
-    "সুন্দর কথা বলেছো! 💐",
-    "মজা করছো নাকি? 😂",
-    "হা হা, ভালো বলেছো! 😄",
-    "তুমি ভালো মানুষ! আমি জানি! 😊",
-]
-
-_EMOJI_REACTIONS = [
-    "\U0001f44d", "\u2764\ufe0f", "\U0001f525", "\U0001f60d",
-    "\U0001f929", "\U0001f44f", "\U0001f601", "\U0001f60e",
-]
-
-# ── Keyword patterns for smart replies ────────────────────────────────────────
-_GREETING_KEYWORDS = re.compile(
-    r"\b(hi|hello|hey|হাই|হ্যালো|হেলো|স্বাগতম|নমস্কার|সুপ্রভাত|শুভ|কেমন আছ|কি খবর|কি অবস্থা)\b",
-    re.IGNORECASE,
-)
-_MUSIC_KEYWORDS = re.compile(
-    r"\b(গান|music|song|play|বাজা|শুনব|শুনতে|গানের|মিউজিক|ভিডিও|video|audio|অডিও)\b",
-    re.IGNORECASE,
-)
-_FUN_KEYWORDS = re.compile(
-    r"\b(game|গেম|খেল|মজা|fun|বোর|bore|quiz|truth|dare|খেলা|খেলব)\b",
-    re.IGNORECASE,
-)
-_THANKS_KEYWORDS = re.compile(
-    r"\b(ধন্যবাদ|thanks|thank|থ্যাংক|tnx|thx|ty|শুকরিয়া)\b",
-    re.IGNORECASE,
-)
-
-
-def _smart_reply(text: str, chat_id: int) -> str:
-    """Generate context-aware reply based on keyword matching."""
-    recent = _get_recent(chat_id)
-
-    # Detect category
-    if _GREETING_KEYWORDS.search(text):
-        pool = _GREETINGS
-    elif _MUSIC_KEYWORDS.search(text):
-        pool = _MUSIC_RESPONSES
-    elif _FUN_KEYWORDS.search(text):
-        pool = _FUN_RESPONSES
-    elif _THANKS_KEYWORDS.search(text):
-        pool = _THANKS_RESPONSES
-    else:
-        pool = _GENERAL_REPLIES
-
-    # Pick non-repeating from the category
-    available = [r for r in pool if r not in recent]
-    if not available:
-        # Try general pool
-        available = [r for r in _GENERAL_REPLIES if r not in recent]
-    if not available:
-        recent.clear()
-        available = pool
-
-    chosen = random.choice(available)
-    recent.append(chosen)
-    return chosen
-
-
 # ── Gemini API models (ordered by preference) ────────────────────────────────
+# Use stable model IDs that are guaranteed to exist on Google's API.
+# The API accepts both versioned and latest aliases.
 _GEMINI_MODELS = [
-    "gemini-2.5-flash",            # Newest, best quality
-    "gemini-2.5-flash-lite",       # Lighter, higher quota
-    "gemini-2.0-flash-lite",       # Highest free quota
-    "gemini-2.0-flash",            # Standard
-    "gemini-1.5-flash",            # Fallback
+    "gemini-2.0-flash-lite",       # Highest free-tier quota, fast
+    "gemini-2.0-flash",            # Good quality + speed balance
+    "gemini-1.5-flash",            # Reliable stable fallback
+    "gemini-1.5-flash-8b",         # Smallest, highest quota fallback
 ]
 
-# ── Enhanced system prompt for better AI responses ────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = (
-    "You are MusicLyrics Bot — a witty, fun, and helpful Telegram music bot. "
-    "You chat naturally like a real friend in Bengali (বাংলা) or English, "
-    "matching whatever language the user writes in.\n\n"
-    "Guidelines:\n"
-    "- Keep replies concise (1-4 sentences) but meaningful and engaging\n"
-    "- Be warm, witty, and use casual tone — like chatting with a friend\n"
-    "- Use relevant emojis naturally but don't overdo it\n"
-    "- NEVER repeat your previous replies — always say something new\n"
-    "- If asked about music/songs, suggest /play, /vplay, /song commands\n"
-    "- If asked about games, mention /quiz, /truth, /dare, /ttt, /flip\n"
-    "- If asked what you can do, give a brief overview of your features\n"
-    "- Answer factual questions accurately when you know the answer\n"
-    "- For questions you don't know, be honest but friendly about it\n"
-    "- If someone is rude, stay polite but firm\n"
-    "- If someone shares feelings, be empathetic and supportive\n"
-    "- You can joke, be sarcastic (lightheartedly), and have personality\n"
-    "- You are created by RajSukh (Owner), support group link available via /start\n"
-    "- Your features: music streaming in VC (audio + video), song download, "
-    "lyrics, games, group security (ban/mute/warn), AI chat, translation, "
-    "sticker tools, and more\n"
+    "You are MusicLyrics Bot — a smart, friendly, and helpful Telegram bot.\n\n"
+    "IMPORTANT RULES:\n"
+    "1. You MUST answer ALL questions properly and accurately. If someone asks "
+    "'What is Python?', answer it correctly. If someone asks a math question, "
+    "solve it. If someone asks about history, science, or anything, give the "
+    "correct answer. You are a KNOWLEDGEABLE assistant.\n"
+    "2. Match the user's language — if they write in Bengali (বাংলা), reply in "
+    "Bengali. If English, reply in English. If mixed, reply in mixed.\n"
+    "3. Keep replies concise (1-5 sentences) but COMPLETE and CORRECT.\n"
+    "4. Be warm and friendly — like a smart friend chatting.\n"
+    "5. Use emojis naturally but sparingly.\n"
+    "6. If asked about your features or commands, mention:\n"
+    "   - /play <song> — Play music in voice chat\n"
+    "   - /vplay <song> — Play video in voice chat\n"
+    "   - /song <query> — Download song\n"
+    "   - /pause, /resume, /skip, /stop — Playback controls\n"
+    "   - /quiz, /truth, /dare, /ttt, /flip, /dice — Games\n"
+    "   - /tr, /tts, /sticker, /info — Tools\n"
+    "7. You are created by RajSukh (Owner).\n"
+    "8. NEVER refuse to answer a question. Always try your best.\n"
+    "9. For questions you genuinely don't know, say so honestly but suggest "
+    "where to find the answer.\n"
+    "10. Do NOT give generic filler responses. Every reply should be meaningful.\n"
 )
 
 
 async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
-    """Get AI response — tries Gemini API with model fallback,
-    then uses smart context-aware local replies."""
+    """Get AI response from Gemini API with model fallback."""
 
     if not Config.AI_API_KEY:
-        return _smart_reply(text, chat_id)
+        LOG.warning("AI_API_KEY not set — cannot generate AI response")
+        return "AI API key সেট করা নেই। Owner-কে বলো AI_API_KEY সেট করতে।"
 
     history = _get_history(chat_id)
 
     # Try each Gemini model (skip those in cooldown)
+    last_error = ""
     for model in _GEMINI_MODELS:
         if time.time() < _model_cooldown_until.get(model, 0):
             LOG.debug("Model %s in cooldown, skipping", model)
             continue
-        result = await _try_gemini(model, text, chat_id, user_name, history)
+        result, error = await _try_gemini(model, text, chat_id, user_name, history)
         if result:
             return result
+        if error:
+            last_error = error
 
-    # All models failed or in cooldown, use smart reply
-    return _smart_reply(text, chat_id)
+    # All models failed
+    LOG.error("All Gemini models failed for chat %s. Last error: %s", chat_id, last_error)
+    return (
+        "দুঃখিত, এই মুহূর্তে AI সার্ভারে সমস্যা হচ্ছে। "
+        "একটু পরে আবার চেষ্টা করো! 🙏"
+    )
 
 
 async def _try_gemini(
     model: str, text: str, chat_id: int,
     user_name: str, history: deque
-) -> Optional[str]:
-    """Try a single Gemini model. Returns reply or None."""
+) -> tuple[Optional[str], str]:
+    """Try a single Gemini model.
+
+    Returns (reply, error_msg). reply is None on failure.
+    """
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent"
     )
 
+    # Build conversation history
     contents = []
     for role, msg in history:
         contents.append({"role": role, "parts": [{"text": msg}]})
 
-    user_text = f"[User: {user_name}] {text}" if user_name else text
+    # Add current user message
+    user_text = text
+    if user_name:
+        user_text = f"[{user_name}]: {text}"
     contents.append({"role": "user", "parts": [{"text": user_text}]})
 
     payload = {
         "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
         "contents": contents,
         "generationConfig": {
-            "maxOutputTokens": 300,
-            "temperature": 0.9,
+            "maxOutputTokens": 500,
+            "temperature": 0.8,
             "topP": 0.95,
+            "topK": 40,
         },
+        # Safety settings — allow most content for natural conversation
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+        ],
     }
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=payload,
-                headers={"x-goog-api-key": Config.AI_API_KEY},
-                timeout=aiohttp.ClientTimeout(total=15),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": Config.AI_API_KEY,
+                },
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     candidates = data.get("candidates", [])
                     if candidates:
+                        # Check if response was blocked by safety
+                        finish_reason = candidates[0].get("finishReason", "")
+                        if finish_reason == "SAFETY":
+                            LOG.warning("Gemini %s: response blocked by safety filter", model)
+                            return None, "safety_blocked"
+
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             reply = parts[0].get("text", "").strip()
                             if reply:
+                                # Save to history
                                 history.append(("user", text))
                                 history.append(("model", reply))
-                                # Reset cooldown multiplier on success
                                 _model_cooldown_multiplier[model] = 1.0
-                                return reply
+                                LOG.info("Gemini %s replied for chat %s (%d chars)",
+                                         model, chat_id, len(reply))
+                                return reply, ""
+                    # No valid response in candidates
+                    LOG.warning("Gemini %s: empty candidates for chat %s. Response: %s",
+                                model, chat_id, str(data)[:300])
+                    return None, "empty_response"
+
                 elif resp.status == 429:
-                    # Quota exceeded — set per-model cooldown with backoff
                     multiplier = _model_cooldown_multiplier.get(model, 1.0)
                     cooldown = _API_COOLDOWN_SECONDS * multiplier
                     _model_cooldown_until[model] = time.time() + cooldown
@@ -285,20 +200,34 @@ async def _try_gemini(
                         multiplier * _API_COOLDOWN_BACKOFF,
                         _MAX_COOLDOWN_MULTIPLIER,
                     )
-                    LOG.warning(
-                        "Gemini %s quota exceeded (429). Cooldown %.0fs.",
-                        model, cooldown,
-                    )
-                    return None
-                else:
-                    LOG.warning("Gemini %s HTTP %d", model, resp.status)
-                    return None
-    except asyncio.TimeoutError:
-        LOG.warning("Gemini %s timeout", model)
-    except Exception as e:
-        LOG.warning("Gemini %s error: %s", model, e)
+                    LOG.warning("Gemini %s: 429 quota exceeded. Cooldown %.0fs.", model, cooldown)
+                    return None, "rate_limited"
 
-    return None
+                elif resp.status == 404:
+                    body = await resp.text()
+                    LOG.error("Gemini %s: 404 NOT FOUND — model name may be invalid. Body: %s",
+                              model, body[:200])
+                    # Permanently cooldown invalid models for 1 hour
+                    _model_cooldown_until[model] = time.time() + 3600
+                    return None, f"model_not_found:{model}"
+
+                elif resp.status in (400, 403):
+                    body = await resp.text()
+                    LOG.error("Gemini %s: HTTP %d — API key or request issue. Body: %s",
+                              model, resp.status, body[:300])
+                    return None, f"http_{resp.status}"
+
+                else:
+                    body = await resp.text()
+                    LOG.warning("Gemini %s: HTTP %d. Body: %s", model, resp.status, body[:200])
+                    return None, f"http_{resp.status}"
+
+    except asyncio.TimeoutError:
+        LOG.warning("Gemini %s: timeout (20s)", model)
+        return None, "timeout"
+    except Exception as e:
+        LOG.warning("Gemini %s: exception: %s", model, e)
+        return None, str(e)
 
 
 # ── Reactions ─────────────────────────────────────────────────────────────────
