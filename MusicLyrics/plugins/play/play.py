@@ -98,10 +98,11 @@ async def _get_audio_media(url: str) -> tuple[str, bool]:
         LOG.info("Using stream URL for: %s", url)
         return stream_url, True
 
-    # Try 2: Download to disk (fallback)
+    # Try 2: Download to disk (fallback — more reliable with ffprobe on cloud)
     LOG.info("Stream URL failed, downloading: %s", url)
     filepath = await download_audio(url)
     if filepath and os.path.isfile(filepath):
+        LOG.info("Downloaded audio for: %s -> %s", url, filepath)
         return filepath, False
 
     return "", False
@@ -308,6 +309,15 @@ async def play_command(client: Client, message: Message):
         await status_msg.edit_text(
             f"❌ {exc}\n\n"
             "STRING_SESSION সেট করা আছে কিনা চেক করুন।"
+        )
+        return
+    except ProcessLookupError:
+        LOG.exception("ProcessLookupError in stream for %s", chat_id)
+        await status_msg.edit_text(
+            "❌ ffprobe/ffmpeg subprocess ব্যর্থ হয়েছে।\n"
+            "Heroku-তে ffmpeg buildpack ইনস্টল আছে কিনা চেক করুন।\n\n"
+            "আবার `/play` দিয়ে চেষ্টা করুন — "
+            "auto-download fallback চেষ্টা করা হবে।"
         )
         return
     except Exception as exc:
