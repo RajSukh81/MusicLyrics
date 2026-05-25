@@ -80,6 +80,15 @@ if _cobalt_custom_url:
     _COBALT_INSTANCES.insert(0, _cobalt_custom_url)
 _COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
 
+# Validate Cobalt API key format — real keys are long hex/alphanumeric strings
+if _COBALT_API_KEY and len(_COBALT_API_KEY) < 20:
+    LOG.warning(
+        "COBALT_API_KEY looks invalid (too short: %d chars). "
+        "Real Cobalt API keys are typically 32+ character hex strings. "
+        "Get a valid key from https://cobalt.tools — current value may cause 401 errors.",
+        len(_COBALT_API_KEY),
+    )
+
 _PROXY_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -371,8 +380,21 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                             if picker:
                                 return picker[0].get("url")
                     else:
-                        LOG.debug("Cobalt %s returned HTTP %d for %s",
-                                  instance, resp.status, video_id)
+                        body = ""
+                        try:
+                            body = await resp.text()
+                        except Exception:
+                            pass
+                        if resp.status in (401, 403):
+                            LOG.warning(
+                                "Cobalt %s returned HTTP %d (auth error) for %s. "
+                                "Your COBALT_API_KEY may be invalid. "
+                                "Get a valid key from https://cobalt.tools",
+                                instance, resp.status, video_id,
+                            )
+                        else:
+                            LOG.debug("Cobalt %s returned HTTP %d for %s: %s",
+                                      instance, resp.status, video_id, body[:100])
         except Exception as e:
             LOG.debug("Cobalt %s failed for %s: %s", instance, video_id, e)
             continue
@@ -1231,12 +1253,22 @@ def _ytdlp_search_sync(query: str, max_results: int = 1) -> Optional[dict]:
 async def get_audio_stream_url(url: str) -> Optional[str]:
     """Extract direct audio stream URL (no download).
 
-    Priority: Innertube Player API -> Cobalt -> Piped -> Invidious -> yt-dlp.
+    Priority: Cobalt -> Innertube Player API -> Piped -> Invidious -> yt-dlp.
+    Cobalt is tried first because it's most reliable on cloud servers.
     """
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Innertube Player API (direct, no yt-dlp, works on cloud IPs)
+        # Try 1: Cobalt API (most reliable on cloud servers — bypasses YouTube blocks)
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=True)
+            if stream_url:
+                LOG.info("Audio stream via Cobalt for %s", video_id)
+                return stream_url
+        except Exception:
+            LOG.debug("Cobalt audio failed for %s", video_id)
+
+        # Try 2: Innertube Player API (direct, no yt-dlp)
         try:
             data = await _innertube_player(video_id)
             if data:
@@ -1246,15 +1278,6 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
                     return stream_url
         except Exception:
             LOG.debug("Innertube audio failed for %s", video_id)
-
-        # Try 2: Cobalt API (reliable on cloud servers)
-        try:
-            stream_url = await _cobalt_get_stream(video_id, audio_only=True)
-            if stream_url:
-                LOG.info("Audio stream via Cobalt for %s", video_id)
-                return stream_url
-        except Exception:
-            LOG.debug("Cobalt audio failed for %s", video_id)
 
         # Try 3: Piped proxy
         try:
@@ -1293,12 +1316,22 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
 async def get_video_stream_url(url: str) -> Optional[str]:
     """Extract direct video stream URL (no download).
 
-    Priority: Innertube Player API -> Cobalt -> Piped -> Invidious -> yt-dlp.
+    Priority: Cobalt -> Innertube Player API -> Piped -> Invidious -> yt-dlp.
+    Cobalt is tried first because it's most reliable on cloud servers.
     """
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Innertube Player API
+        # Try 1: Cobalt API (most reliable on cloud servers)
+        try:
+            stream_url = await _cobalt_get_stream(video_id, audio_only=False)
+            if stream_url:
+                LOG.info("Video stream via Cobalt for %s", video_id)
+                return stream_url
+        except Exception:
+            LOG.debug("Cobalt video failed for %s", video_id)
+
+        # Try 2: Innertube Player API
         try:
             data = await _innertube_player(video_id)
             if data:
@@ -1308,15 +1341,6 @@ async def get_video_stream_url(url: str) -> Optional[str]:
                     return stream_url
         except Exception:
             LOG.debug("Innertube video failed for %s", video_id)
-
-        # Try 2: Cobalt API (reliable on cloud servers)
-        try:
-            stream_url = await _cobalt_get_stream(video_id, audio_only=False)
-            if stream_url:
-                LOG.info("Video stream via Cobalt for %s", video_id)
-                return stream_url
-        except Exception:
-            LOG.debug("Cobalt video failed for %s", video_id)
 
         # Try 3: Piped proxy
         try:
@@ -1573,25 +1597,11 @@ async def _piped_or_invidious_video(video_id: str) -> Optional[str]:
 
 
 async def download_audio(url: str) -> Optional[str]:
-    """Download audio. Tries Innertube/Cobalt/Piped stream + download, yt-dlp fallback."""
+    """Download audio. Tries Cobalt/Innertube/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Innertube Player API -> download stream
-        try:
-            data = await _innertube_player(video_id)
-            if data:
-                stream_url = _best_innertube_audio(data)
-                if stream_url:
-                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube.m4a")
-                    downloaded = await _download_stream(stream_url, filepath)
-                    if downloaded:
-                        LOG.info("Audio downloaded via Innertube for %s", video_id)
-                        return downloaded
-        except Exception:
-            LOG.debug("Innertube audio download failed for %s", video_id)
-
-        # Try 2: Cobalt API -> download stream
+        # Try 1: Cobalt API -> download stream (most reliable on cloud)
         try:
             stream_url = await _cobalt_get_stream(video_id, audio_only=True)
             if stream_url:
@@ -1602,6 +1612,22 @@ async def download_audio(url: str) -> Optional[str]:
                     return downloaded
         except Exception:
             LOG.debug("Cobalt audio download failed for %s", video_id)
+
+        # Try 2: Innertube Player API -> download stream
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_audio(data)
+                if stream_url:
+                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube.m4a")
+                    # Innertube URLs are YouTube CDN — NEED proxy on cloud
+                    downloaded = await _download_stream(stream_url, filepath,
+                                                        use_proxy=True)
+                    if downloaded:
+                        LOG.info("Audio downloaded via Innertube for %s", video_id)
+                        return downloaded
+        except Exception:
+            LOG.debug("Innertube audio download failed for %s", video_id)
 
         # Try 3: Piped/Invidious stream URL + download
         try:
@@ -1627,25 +1653,11 @@ async def download_audio(url: str) -> Optional[str]:
 
 
 async def download_video(url: str) -> Optional[str]:
-    """Download video. Tries Innertube/Cobalt/Piped stream + download, yt-dlp fallback."""
+    """Download video. Tries Cobalt/Innertube/Piped stream + download, yt-dlp fallback."""
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Innertube Player API -> download stream
-        try:
-            data = await _innertube_player(video_id)
-            if data:
-                stream_url = _best_innertube_video(data)
-                if stream_url:
-                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube_video.mp4")
-                    downloaded = await _download_stream(stream_url, filepath)
-                    if downloaded:
-                        LOG.info("Video downloaded via Innertube for %s", video_id)
-                        return downloaded
-        except Exception:
-            LOG.debug("Innertube video download failed for %s", video_id)
-
-        # Try 2: Cobalt API -> download stream
+        # Try 1: Cobalt API -> download stream (most reliable on cloud)
         try:
             stream_url = await _cobalt_get_stream(video_id, audio_only=False)
             if stream_url:
@@ -1656,6 +1668,22 @@ async def download_video(url: str) -> Optional[str]:
                     return downloaded
         except Exception:
             LOG.debug("Cobalt video download failed for %s", video_id)
+
+        # Try 2: Innertube Player API -> download stream
+        try:
+            data = await _innertube_player(video_id)
+            if data:
+                stream_url = _best_innertube_video(data)
+                if stream_url:
+                    filepath = os.path.join(_DOWNLOADS, f"{video_id}_innertube_video.mp4")
+                    # Innertube URLs are YouTube CDN — NEED proxy on cloud
+                    downloaded = await _download_stream(stream_url, filepath,
+                                                        use_proxy=True)
+                    if downloaded:
+                        LOG.info("Video downloaded via Innertube for %s", video_id)
+                        return downloaded
+        except Exception:
+            LOG.debug("Innertube video download failed for %s", video_id)
 
         # Try 3: Piped/Invidious stream URL + download
         try:
@@ -1930,18 +1958,27 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
     return None, None
 
 
-async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:
+async def _download_stream(stream_url: str, filepath: str,
+                           use_proxy: bool = False) -> Optional[str]:
     """Download a stream URL directly via aiohttp.
 
-    NOTE: Does NOT use YOUTUBE_PROXY — stream URLs from Piped/Invidious/Cobalt
-    are already proxied URLs that should be fetched directly.
+    use_proxy=True for Innertube/YouTube CDN URLs (need proxy on cloud).
+    use_proxy=False for Piped/Invidious/Cobalt URLs (already proxied).
     """
     try:
+        req_kwargs = {}
+        if use_proxy:
+            proxy = _get_proxy()
+            if proxy:
+                req_kwargs["proxy"] = proxy
+                LOG.debug("Downloading stream via proxy: %s", proxy[:30])
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 stream_url,
                 headers=_PROXY_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=180),
+                **req_kwargs,
             ) as resp:
                 if resp.status != 200:
                     LOG.debug("Stream download HTTP %d for: %s", resp.status, stream_url[:80])
