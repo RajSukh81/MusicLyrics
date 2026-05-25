@@ -24,6 +24,18 @@ from config import Config
 
 LOG = logging.getLogger(__name__)
 
+class _YtDlpLogger:
+    """Custom logger for yt-dlp that suppresses noisy warnings."""
+    def debug(self, msg): LOG.debug("[yt-dlp] %s", msg)
+    def info(self, msg): LOG.debug("[yt-dlp] %s", msg)
+    def warning(self, msg):
+        if "is not a valid URL" in str(msg):
+            return  # Suppress noisy generic extractor warnings
+        LOG.warning("[yt-dlp] %s", msg)
+    def error(self, msg): LOG.warning("[yt-dlp] %s", msg)
+
+_ytdlp_logger = _YtDlpLogger()
+
 _DOWNLOADS = Config.DOWNLOADS_DIR
 os.makedirs(_DOWNLOADS, exist_ok=True)
 
@@ -38,12 +50,6 @@ _PIPED_INSTANCES = [
     "https://pipedapi.r4fo.com",
     "https://api.piped.yt",
     "https://pipedapi.leptons.xyz",
-    "https://pipedapi.ngn.tf",
-    "https://pipedapi.in.projectsegfau.lt",
-    "https://pipedapi.darkness.services",
-    "https://pipedapi.drgns.space",
-    "https://pipedapi.simpleprivacy.fr",
-    "https://api.piped.privacydev.net",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -51,14 +57,8 @@ _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.fdn.fr",
     "https://invidious.protokolla.fi",
-    "https://invidious.nerdvpn.de",
-    "https://inv.tux.pizza",
-    "https://invidious.perennialte.ch",
     "https://iv.datura.network",
-    "https://invidious.lunar.icu",
-    "https://yt.drgnz.club",
     "https://vid.puffyan.us",
-    "https://invidious.snopyta.org",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -858,6 +858,8 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "retries": 5,
         "fragment_retries": 5,
         "noplaylist": True,
+        "no_color": True,
+        "logger": _ytdlp_logger,
         "check_formats": False,       # CRITICAL: skip format verification on cloud
         "allow_unplayable_formats": False,
         "format_sort": [
@@ -1522,6 +1524,140 @@ async def download_video(url: str) -> Optional[str]:
         "overwrites": False,
     }
     return await _run_ytdlp(url, opts)
+
+
+async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional[dict]]:
+    """Search YouTube and download audio in one step using yt-dlp's ytsearch.
+
+    This is the most reliable fallback for cloud servers where separate
+    search -> extract URL -> download flow fails due to IP blocking.
+    yt-dlp handles search + download atomically.
+
+    Returns (filepath, info_dict) or (None, None).
+    """
+    import yt_dlp
+    loop = asyncio.get_running_loop()
+
+    for combo in _get_client_combos():
+        opts = {
+            **_base_ytdlp_opts(client_combo=combo),
+            "format": "ba*/b",
+            "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
+            "default_search": "ytsearch",
+            "noplaylist": True,
+            "overwrites": False,
+        }
+        try:
+            def _do_search_dl():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(query, download=True)
+                    if not info:
+                        return None, None
+                    # ytsearch returns a playlist-like result
+                    entries = info.get("entries")
+                    item = entries[0] if entries else info
+                    if not item:
+                        return None, None
+                    path = ydl.prepare_filename(item)
+                    if not os.path.exists(path):
+                        base = os.path.splitext(path)[0]
+                        for ext in (".opus", ".m4a", ".webm", ".mp3", ".ogg", ".mp4"):
+                            candidate = base + ext
+                            if os.path.exists(candidate):
+                                path = candidate
+                                break
+                        else:
+                            matches = sorted(glob.glob(f"{base}.*"),
+                                             key=os.path.getmtime, reverse=True)
+                            if matches:
+                                path = matches[0]
+                    if not os.path.exists(path):
+                        return None, None
+                    result_info = {
+                        "title": item.get("title", "Unknown"),
+                        "url": item.get("webpage_url") or item.get("url", ""),
+                        "duration": int(item.get("duration") or 0),
+                        "thumbnail": item.get("thumbnail", ""),
+                        "channel": item.get("uploader") or item.get("channel", "Unknown"),
+                        "video_id": item.get("id", ""),
+                    }
+                    return path, result_info
+
+            filepath, info = await loop.run_in_executor(None, _do_search_dl)
+            if filepath and os.path.isfile(filepath):
+                LOG.info("search_and_download_audio succeeded (client: %s): %s", combo, query)
+                return filepath, info
+        except Exception as exc:
+            LOG.warning("search_and_download_audio failed (client %s): %s", combo, exc)
+            continue
+
+    LOG.error("search_and_download_audio: all attempts failed for: %s", query)
+    return None, None
+
+
+async def search_and_download_video(query: str) -> tuple[Optional[str], Optional[dict]]:
+    """Search YouTube and download video in one step using yt-dlp's ytsearch.
+
+    Returns (filepath, info_dict) or (None, None).
+    """
+    import yt_dlp
+    loop = asyncio.get_running_loop()
+
+    for combo in _get_client_combos():
+        opts = {
+            **_base_ytdlp_opts(client_combo=combo),
+            "format": "bv*[height<=720]+ba*/bv*+ba*/b",
+            "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
+            "merge_output_format": "mp4",
+            "default_search": "ytsearch",
+            "noplaylist": True,
+            "overwrites": False,
+        }
+        try:
+            def _do_search_dl():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(query, download=True)
+                    if not info:
+                        return None, None
+                    entries = info.get("entries")
+                    item = entries[0] if entries else info
+                    if not item:
+                        return None, None
+                    path = ydl.prepare_filename(item)
+                    if not os.path.exists(path):
+                        base = os.path.splitext(path)[0]
+                        for ext in (".mp4", ".mkv", ".webm", ".flv"):
+                            candidate = base + ext
+                            if os.path.exists(candidate):
+                                path = candidate
+                                break
+                        else:
+                            matches = sorted(glob.glob(f"{base}.*"),
+                                             key=os.path.getmtime, reverse=True)
+                            if matches:
+                                path = matches[0]
+                    if not os.path.exists(path):
+                        return None, None
+                    result_info = {
+                        "title": item.get("title", "Unknown"),
+                        "url": item.get("webpage_url") or item.get("url", ""),
+                        "duration": int(item.get("duration") or 0),
+                        "thumbnail": item.get("thumbnail", ""),
+                        "channel": item.get("uploader") or item.get("channel", "Unknown"),
+                        "video_id": item.get("id", ""),
+                    }
+                    return path, result_info
+
+            filepath, info = await loop.run_in_executor(None, _do_search_dl)
+            if filepath and os.path.isfile(filepath):
+                LOG.info("search_and_download_video succeeded (client: %s): %s", combo, query)
+                return filepath, info
+        except Exception as exc:
+            LOG.warning("search_and_download_video failed (client %s): %s", combo, exc)
+            continue
+
+    LOG.error("search_and_download_video: all attempts failed for: %s", query)
+    return None, None
 
 
 async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:

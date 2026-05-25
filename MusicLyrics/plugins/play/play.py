@@ -34,6 +34,7 @@ from MusicLyrics.plugins.play.platforms.youtube import (
     download_audio,
     get_video_info,
     is_youtube_url,
+    search_and_download_audio,
 )
 from MusicLyrics.plugins.play.platforms.spotify import (
     is_spotify_url,
@@ -202,6 +203,11 @@ async def _resolve_query(query: str, platform: str, msg: Message):
     # -- Plain text query: YouTube search
     yt = await search_youtube(query)
     if not yt:
+        # Innertube search failed — try yt-dlp search+download as last resort
+        LOG.info("Search failed, trying combined search+download for: %s", query)
+        filepath, dl_info = await search_and_download_audio(query)
+        if filepath and dl_info:
+            return dl_info, filepath, False
         raise ValueError("কোনো result পাওয়া যায়নি। অন্য keyword দিয়ে চেষ্টা করুন।")
     if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
         raise ValueError(
@@ -209,6 +215,13 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         )
     media_path, is_stream = await _get_audio_media(yt["url"])
     if not media_path:
+        # Stream URL + download both failed — try combined search+download
+        LOG.info("All extraction failed, trying combined search+download for: %s", query)
+        filepath, dl_info = await search_and_download_audio(query)
+        if filepath:
+            # Use search result info if available, otherwise use download info
+            info = dl_info or yt
+            return info, filepath, False
         raise ValueError("Audio stream পাওয়া যায়নি। আবার চেষ্টা করুন।")
     return yt, media_path, is_stream
 

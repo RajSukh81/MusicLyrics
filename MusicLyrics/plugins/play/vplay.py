@@ -34,6 +34,7 @@ from MusicLyrics.plugins.play.platforms.youtube import (
     download_video,
     get_video_info,
     is_youtube_url,
+    search_and_download_video,
 )
 from MusicLyrics.plugins.play.platforms.spotify import (
     is_spotify_url,
@@ -156,6 +157,10 @@ async def _resolve_video(query: str, platform: str):
     # Plain text query
     yt = await search_youtube(query)
     if not yt:
+        LOG.info("Video search failed, trying combined search+download for: %s", query)
+        filepath, dl_info = await search_and_download_video(query)
+        if filepath and dl_info:
+            return dl_info, filepath, False
         raise ValueError("কোনো result পাওয়া যায়নি।")
     if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
         raise ValueError(
@@ -163,6 +168,11 @@ async def _resolve_video(query: str, platform: str):
         )
     media_path, is_stream = await _get_video_media(yt["url"])
     if not media_path:
+        LOG.info("All video extraction failed, trying combined search+download for: %s", query)
+        filepath, dl_info = await search_and_download_video(query)
+        if filepath:
+            info = dl_info or yt
+            return info, filepath, False
         raise ValueError("Video stream পাওয়া যায়নি।")
     return yt, media_path, is_stream
 
