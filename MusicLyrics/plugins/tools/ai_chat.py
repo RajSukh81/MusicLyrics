@@ -30,7 +30,9 @@ _chat_histories: dict[int, deque] = {}
 
 # ── API rate limit tracking ───────────────────────────────────────────────────
 _model_cooldown_until: dict[str, float] = {}
-_API_COOLDOWN_SECONDS = 60
+# Reduced cooldown: free tier allows 15 RPM for flash-lite, 10 RPM for flash.
+# Short cooldowns let us retry quickly when quota resets (per-minute quota).
+_API_COOLDOWN_SECONDS = 10
 _API_COOLDOWN_BACKOFF = 1.5
 _model_cooldown_multiplier: dict[str, float] = {}
 _MAX_COOLDOWN_MULTIPLIER = 4.0
@@ -48,15 +50,19 @@ def _get_history(chat_id: int) -> deque:
 
 
 # ── Gemini API models (ordered by preference) ────────────────────────────────
-# Updated May 2026 — only use model IDs confirmed to exist on Google's API.
-# gemini-1.5-flash and gemini-1.5-flash-8b have been REMOVED (return 404).
+# Updated May 2026 — ONLY models confirmed working on Google Generative AI API.
+# Models removed from API (return 404): gemini-1.5-flash, gemini-1.5-flash-8b,
+# gemini-1.5-pro, gemini-pro, gemini-2.0-flash-exp
+#
+# Strategy: Use multiple VALID models so when one hits 429 rate limit,
+# the next one picks up. All 2.0 models have separate quotas.
 _GEMINI_MODELS = [
-    "gemini-2.0-flash-lite",       # Highest free-tier quota, fast
+    "gemini-2.0-flash-lite",       # Highest free-tier quota, fastest
     "gemini-2.0-flash",            # Good quality + speed balance
-    "gemini-2.0-flash-exp",        # Experimental variant (often available)
-    "gemini-1.5-pro",              # Stable fallback (still supported)
-    "gemini-pro",                  # Legacy but still works on v1beta
 ]
+
+# Also try v1 endpoint (not just v1beta) as some models are only on v1
+_GEMINI_API_VERSIONS = ["v1beta", "v1"]
 
 # ── Offline fallback messages ────────────────────────────────────────────────
 # 50+ curated Bengali messages for when AI API is down or unreachable.
@@ -286,17 +292,24 @@ async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
 
     history = _get_history(chat_id)
 
-    # Try each Gemini model (skip those in cooldown)
+    # Try each Gemini model with each API version (skip those in cooldown)
     last_error = ""
     for model in _GEMINI_MODELS:
-        if time.time() < _model_cooldown_until.get(model, 0):
-            LOG.debug("Model %s in cooldown, skipping", model)
-            continue
-        result, error = await _try_gemini(model, text, chat_id, user_name, history)
-        if result:
-            return result
-        if error:
-            last_error = error
+        for api_ver in _GEMINI_API_VERSIONS:
+            cache_key = f"{api_ver}/{model}"
+            if time.time() < _model_cooldown_until.get(cache_key, 0):
+                LOG.debug("Model %s in cooldown, skipping", cache_key)
+                continue
+            result, error = await _try_gemini(
+                model, text, chat_id, user_name, history, api_ver
+            )
+            if result:
+                return result
+            if error:
+                last_error = error
+                # If 404, don't try same model on other API version
+                if "model_not_found" in error:
+                    break
 
     # All models failed — use smart offline response
     LOG.error("All Gemini models failed for chat %s. Last error: %s", chat_id, last_error)
@@ -305,16 +318,19 @@ async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
 
 async def _try_gemini(
     model: str, text: str, chat_id: int,
-    user_name: str, history: deque
+    user_name: str, history: deque,
+    api_ver: str = "v1beta",
 ) -> tuple[Optional[str], str]:
     """Try a single Gemini model.
 
     Returns (reply, error_msg). reply is None on failure.
     """
 
+    cache_key = f"{api_ver}/{model}"
+
     # Try v1beta first (supports newer models), fall back to v1
     url = (
-        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"https://generativelanguage.googleapis.com/{api_ver}/"
         f"models/{model}:generateContent"
     )
 
@@ -364,7 +380,7 @@ async def _try_gemini(
                         # Check if response was blocked by safety
                         finish_reason = candidates[0].get("finishReason", "")
                         if finish_reason == "SAFETY":
-                            LOG.warning("Gemini %s: response blocked by safety filter", model)
+                            LOG.warning("Gemini %s: response blocked by safety filter", cache_key)
                             return None, "safety_blocked"
 
                         parts = candidates[0].get("content", {}).get("parts", [])
@@ -374,50 +390,50 @@ async def _try_gemini(
                                 # Save to history
                                 history.append(("user", text))
                                 history.append(("model", reply))
-                                _model_cooldown_multiplier[model] = 1.0
+                                _model_cooldown_multiplier[cache_key] = 1.0
                                 LOG.info("Gemini %s replied for chat %s (%d chars)",
-                                         model, chat_id, len(reply))
+                                         cache_key, chat_id, len(reply))
                                 return reply, ""
                     # No valid response in candidates
                     LOG.warning("Gemini %s: empty candidates for chat %s. Response: %s",
-                                model, chat_id, str(data)[:300])
+                                cache_key, chat_id, str(data)[:300])
                     return None, "empty_response"
 
                 elif resp.status == 429:
-                    multiplier = _model_cooldown_multiplier.get(model, 1.0)
+                    multiplier = _model_cooldown_multiplier.get(cache_key, 1.0)
                     cooldown = _API_COOLDOWN_SECONDS * multiplier
-                    _model_cooldown_until[model] = time.time() + cooldown
-                    _model_cooldown_multiplier[model] = min(
+                    _model_cooldown_until[cache_key] = time.time() + cooldown
+                    _model_cooldown_multiplier[cache_key] = min(
                         multiplier * _API_COOLDOWN_BACKOFF,
                         _MAX_COOLDOWN_MULTIPLIER,
                     )
-                    LOG.warning("Gemini %s: 429 quota exceeded. Cooldown %.0fs.", model, cooldown)
+                    LOG.warning("Gemini %s: 429 quota exceeded. Cooldown %.0fs.", cache_key, cooldown)
                     return None, "rate_limited"
 
                 elif resp.status == 404:
                     body = await resp.text()
-                    LOG.error("Gemini %s: 404 NOT FOUND — model name may be invalid. Body: %s",
-                              model, body[:200])
+                    LOG.error("Gemini %s: 404 NOT FOUND — model may be invalid. Body: %s",
+                              cache_key, body[:200])
                     # Permanently cooldown invalid models for 1 hour
-                    _model_cooldown_until[model] = time.time() + 3600
-                    return None, f"model_not_found:{model}"
+                    _model_cooldown_until[cache_key] = time.time() + 3600
+                    return None, f"model_not_found:{cache_key}"
 
                 elif resp.status in (400, 403):
                     body = await resp.text()
                     LOG.error("Gemini %s: HTTP %d — API key or request issue. Body: %s",
-                              model, resp.status, body[:300])
+                              cache_key, resp.status, body[:300])
                     return None, f"http_{resp.status}"
 
                 else:
                     body = await resp.text()
-                    LOG.warning("Gemini %s: HTTP %d. Body: %s", model, resp.status, body[:200])
+                    LOG.warning("Gemini %s: HTTP %d. Body: %s", cache_key, resp.status, body[:200])
                     return None, f"http_{resp.status}"
 
     except asyncio.TimeoutError:
-        LOG.warning("Gemini %s: timeout (20s)", model)
+        LOG.warning("Gemini %s: timeout (20s)", cache_key)
         return None, "timeout"
     except Exception as e:
-        LOG.warning("Gemini %s: exception: %s", model, e)
+        LOG.warning("Gemini %s: exception: %s", cache_key, e)
         return None, str(e)
 
 
