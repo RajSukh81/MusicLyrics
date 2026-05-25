@@ -104,6 +104,15 @@ async def _resolve_video(query: str, platform: str):
             )
         media_path, is_stream = await _get_video_media(query)
         if not media_path:
+            title_query = info.get("title", "")
+            channel_query = info.get("channel", "")
+            if title_query and title_query != "YouTube Video":
+                LOG.info("YouTube video URL extraction failed, trying search+download: %s", title_query)
+                filepath, dl_info = await search_and_download_video(
+                    f"{title_query} {channel_query}".strip()
+                )
+                if filepath:
+                    return (dl_info or info), filepath, False
             raise ValueError("YouTube থেকে video পাওয়া যায়নি।")
         return info, media_path, is_stream
 

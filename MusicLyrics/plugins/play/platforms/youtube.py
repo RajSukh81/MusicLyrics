@@ -50,6 +50,8 @@ _PIPED_INSTANCES = [
     "https://pipedapi.r4fo.com",
     "https://api.piped.yt",
     "https://pipedapi.leptons.xyz",
+    "https://pipedapi.darkness.services",
+    "https://pipedapi.drgns.space",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -59,6 +61,8 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.protokolla.fi",
     "https://iv.datura.network",
     "https://vid.puffyan.us",
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -81,13 +85,39 @@ _PROXY_HEADERS = {
 }
 
 # ── Proxy support for cloud deployments ──────────────────────────────────────
+# Track proxy health — auto-disable proxies that return 402/403/407
+_proxy_dead = False
+_proxy_fail_count = 0
+_PROXY_FAIL_THRESHOLD = 2  # Disable after 2 consecutive failures
+
+
+def _mark_proxy_failed():
+    """Mark the proxy as potentially dead after a failure."""
+    global _proxy_fail_count, _proxy_dead
+    _proxy_fail_count += 1
+    if _proxy_fail_count >= _PROXY_FAIL_THRESHOLD:
+        _proxy_dead = True
+        LOG.warning("Proxy disabled after %d consecutive failures. "
+                    "All requests will go direct. Check your YOUTUBE_PROXY subscription.",
+                    _proxy_fail_count)
+
+
+def _mark_proxy_ok():
+    """Reset proxy failure counter on success."""
+    global _proxy_fail_count, _proxy_dead
+    _proxy_fail_count = 0
+    _proxy_dead = False
+
+
 def _get_proxy() -> Optional[str]:
     """Get a random proxy URL from the proxy list or single proxy config.
 
-    Supports proxy rotation: if YOUTUBE_PROXY_LIST is set with multiple
-    proxies, a random one is selected each time. Falls back to single
-    YOUTUBE_PROXY if list is empty.
+    Returns None if the proxy has been auto-disabled due to failures
+    (e.g., 402 Payment Required = expired subscription).
     """
+    if _proxy_dead:
+        return None  # Proxy is dead, go direct
+
     # Priority 1: Proxy list (rotation)
     if Config.YOUTUBE_PROXIES:
         proxy = random.choice(Config.YOUTUBE_PROXIES)
@@ -102,7 +132,11 @@ def _aio_session_kwargs() -> dict:
 
 
 def _aio_request_kwargs() -> dict:
-    """Return kwargs for aiohttp request methods (get/post) with proxy."""
+    """Return kwargs for aiohttp request methods (get/post) with proxy.
+
+    ONLY use this for direct YouTube API calls (Innertube).
+    Do NOT use for third-party APIs (Piped, Invidious, Cobalt).
+    """
     proxy = _get_proxy()
     if proxy:
         return {"proxy": proxy}
@@ -123,7 +157,11 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 async def _piped_get_streams(video_id: str) -> Optional[dict]:
-    """Get stream info from Piped API. Returns dict with audioStreams, videoStreams, etc."""
+    """Get stream info from Piped API. Returns dict with audioStreams, videoStreams, etc.
+
+    NOTE: Does NOT use YOUTUBE_PROXY — Piped instances ARE the proxy.
+    Sending requests to Piped through another proxy just adds failure points.
+    """
     instances = list(_PIPED_INSTANCES)
     random.shuffle(instances)
 
@@ -133,8 +171,7 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/streams/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                    **_aio_request_kwargs(),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -151,7 +188,10 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
 
 
 async def _invidious_get_streams(video_id: str) -> Optional[dict]:
-    """Get stream info from Invidious API."""
+    """Get stream info from Invidious API.
+
+    NOTE: Does NOT use YOUTUBE_PROXY — Invidious instances ARE the proxy.
+    """
     instances = list(_INVIDIOUS_INSTANCES)
     random.shuffle(instances)
 
@@ -161,8 +201,7 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
                 async with session.get(
                     f"{base_url}/api/v1/videos/{video_id}",
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                    **_aio_request_kwargs(),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -233,7 +272,8 @@ def _best_invidious_audio_url(data: dict) -> Optional[str]:
 async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional[str]:
     """Get stream URL via Cobalt API. Works reliably on cloud servers.
 
-    Requires COBALT_API_KEY env var since Cobalt v10+ (late 2024).
+    Requires a VALID COBALT_API_KEY env var since Cobalt v10+ (late 2024).
+    NOTE: Does NOT use YOUTUBE_PROXY — Cobalt IS the proxy to YouTube.
     """
     if not _COBALT_API_KEY:
         LOG.debug("Cobalt API key not set (COBALT_API_KEY), skipping Cobalt.")
@@ -261,7 +301,6 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=20),
-                    **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -601,6 +640,7 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
 
     Tries WEB client with cookies first (best for cloud servers),
     then mobile clients for direct stream URLs without signature cipher.
+    Auto-detects and disables broken proxies (402 Payment Required).
     """
     # Try WEB client with cookies first (works on cloud IPs when authenticated)
     cookie_file = _get_cookie()
@@ -647,6 +687,8 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                     **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status != 200:
+                        if resp.status in (402, 407):
+                            _mark_proxy_failed()
                         LOG.debug("Innertube player %s HTTP %d for %s",
                                  client["name"], resp.status, video_id)
                         continue
@@ -977,7 +1019,11 @@ async def search_youtube_many(query: str, limit: int = 5) -> list[dict]:
 
 
 async def _innertube_search(query: str, limit: int = 5) -> list[dict]:
-    """Call YouTube innertube search API and parse results."""
+    """Call YouTube innertube search API and parse results.
+
+    NOTE: Does NOT use proxy — YouTube search API works fine from cloud IPs.
+    Only the player/stream API blocks cloud IPs.
+    """
     payload = {
         "context": _INNERTUBE_CONTEXT,
         "query": query,
@@ -989,7 +1035,6 @@ async def _innertube_search(query: str, limit: int = 5) -> list[dict]:
             json=payload,
             headers=_HEADERS,
             timeout=aiohttp.ClientTimeout(total=15),
-            **_aio_request_kwargs(),
         ) as resp:
             if resp.status != 200:
                 LOG.warning("Innertube search HTTP %d for: %s", resp.status, query)
@@ -1328,11 +1373,34 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
                 result = _extract_stream_from_info(info, audio_only)
                 if result:
                     LOG.info("Stream URL obtained for %s (client: %s)", url, combo)
+                    _mark_proxy_ok()
                     return result
         except Exception as exc:
             last_err = exc
+            exc_str = str(exc)
+            # Detect proxy payment/auth failures and auto-disable
+            if "402" in exc_str or "Payment Required" in exc_str or \
+               "407" in exc_str or "Proxy Authentication" in exc_str:
+                _mark_proxy_failed()
+                LOG.warning("Proxy payment/auth error detected: %s", exc_str[:100])
             LOG.warning("Stream URL attempt failed with client %s: %s", combo, exc)
             continue
+
+    # Ultimate fallback: try without proxy if proxy was being used
+    if last_err and _get_proxy():
+        LOG.info("Retrying stream URL WITHOUT proxy for: %s", url)
+        try:
+            opts = {**_base_ytdlp_opts(), "format": "ba*/b" if audio_only else "bv*+ba*/b"}
+            opts.pop("proxy", None)  # Force no proxy
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                result = _extract_stream_from_info(info, audio_only)
+                if result:
+                    LOG.info("Stream URL obtained WITHOUT proxy for %s", url)
+                    _mark_proxy_failed()  # Mark proxy as bad
+                    return result
+        except Exception as exc2:
+            LOG.warning("No-proxy fallback also failed: %s", exc2)
 
     # Ultimate fallback 1: try "b" (best anything) with default client
     if last_err:
@@ -1592,6 +1660,63 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
             continue
 
     LOG.error("search_and_download_audio: all attempts failed for: %s", query)
+
+    # Last resort: retry first client combo without proxy
+    if _get_proxy() or _proxy_dead:
+        LOG.info("search_and_download_audio: retrying WITHOUT proxy for: %s", query)
+        import yt_dlp as _yt_dlp
+        combos = _get_client_combos()
+        opts = {
+            **_base_ytdlp_opts(client_combo=combos[0]),
+            "format": "ba*/b",
+            "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
+            "default_search": "ytsearch",
+            "noplaylist": True,
+            "overwrites": False,
+        }
+        opts.pop("proxy", None)  # Force no proxy
+        try:
+            def _do_noproxy_dl():
+                with _yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(query, download=True)
+                    if not info:
+                        return None, None
+                    entries = info.get("entries")
+                    item = entries[0] if entries else info
+                    if not item:
+                        return None, None
+                    path = ydl.prepare_filename(item)
+                    if not os.path.exists(path):
+                        base = os.path.splitext(path)[0]
+                        for ext in (".opus", ".m4a", ".webm", ".mp3", ".ogg", ".mp4"):
+                            candidate = base + ext
+                            if os.path.exists(candidate):
+                                path = candidate
+                                break
+                        else:
+                            matches = sorted(glob.glob(f"{base}.*"),
+                                             key=os.path.getmtime, reverse=True)
+                            if matches:
+                                path = matches[0]
+                    if not os.path.exists(path):
+                        return None, None
+                    result_info = {
+                        "title": item.get("title", "Unknown"),
+                        "url": item.get("webpage_url") or item.get("url", ""),
+                        "duration": int(item.get("duration") or 0),
+                        "thumbnail": item.get("thumbnail", ""),
+                        "channel": item.get("uploader") or item.get("channel", "Unknown"),
+                        "video_id": item.get("id", ""),
+                    }
+                    return path, result_info
+            filepath, info = await loop.run_in_executor(None, _do_noproxy_dl)
+            if filepath and os.path.isfile(filepath):
+                LOG.info("search_and_download_audio succeeded WITHOUT proxy: %s", query)
+                _mark_proxy_failed()
+                return filepath, info
+        except Exception as exc:
+            LOG.warning("search_and_download_audio no-proxy also failed: %s", exc)
+
     return None, None
 
 
@@ -1657,18 +1782,79 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
             continue
 
     LOG.error("search_and_download_video: all attempts failed for: %s", query)
+
+    # Last resort: retry first client combo without proxy
+    if _get_proxy() or _proxy_dead:
+        LOG.info("search_and_download_video: retrying WITHOUT proxy for: %s", query)
+        import yt_dlp as _yt_dlp
+        combos = _get_client_combos()
+        opts = {
+            **_base_ytdlp_opts(client_combo=combos[0]),
+            "format": "bv*[height<=720]+ba*/bv*+ba*/b",
+            "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
+            "merge_output_format": "mp4",
+            "default_search": "ytsearch",
+            "noplaylist": True,
+            "overwrites": False,
+        }
+        opts.pop("proxy", None)  # Force no proxy
+        try:
+            def _do_noproxy_dl():
+                with _yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(query, download=True)
+                    if not info:
+                        return None, None
+                    entries = info.get("entries")
+                    item = entries[0] if entries else info
+                    if not item:
+                        return None, None
+                    path = ydl.prepare_filename(item)
+                    if not os.path.exists(path):
+                        base = os.path.splitext(path)[0]
+                        for ext in (".mp4", ".mkv", ".webm", ".flv"):
+                            candidate = base + ext
+                            if os.path.exists(candidate):
+                                path = candidate
+                                break
+                        else:
+                            matches = sorted(glob.glob(f"{base}.*"),
+                                             key=os.path.getmtime, reverse=True)
+                            if matches:
+                                path = matches[0]
+                    if not os.path.exists(path):
+                        return None, None
+                    result_info = {
+                        "title": item.get("title", "Unknown"),
+                        "url": item.get("webpage_url") or item.get("url", ""),
+                        "duration": int(item.get("duration") or 0),
+                        "thumbnail": item.get("thumbnail", ""),
+                        "channel": item.get("uploader") or item.get("channel", "Unknown"),
+                        "video_id": item.get("id", ""),
+                    }
+                    return path, result_info
+            filepath, info = await loop.run_in_executor(None, _do_noproxy_dl)
+            if filepath and os.path.isfile(filepath):
+                LOG.info("search_and_download_video succeeded WITHOUT proxy: %s", query)
+                _mark_proxy_failed()
+                return filepath, info
+        except Exception as exc:
+            LOG.warning("search_and_download_video no-proxy also failed: %s", exc)
+
     return None, None
 
 
 async def _download_stream(stream_url: str, filepath: str) -> Optional[str]:
-    """Download a stream URL directly via aiohttp."""
+    """Download a stream URL directly via aiohttp.
+
+    NOTE: Does NOT use YOUTUBE_PROXY — stream URLs from Piped/Invidious/Cobalt
+    are already proxied URLs that should be fetched directly.
+    """
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 stream_url,
                 headers=_PROXY_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=180),
-                **_aio_request_kwargs(),
             ) as resp:
                 if resp.status != 200:
                     LOG.debug("Stream download HTTP %d for: %s", resp.status, stream_url[:80])
@@ -1765,8 +1951,39 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
                     return matches[0]
         except Exception as exc:
             last_err = exc
+            exc_str = str(exc)
+            if "402" in exc_str or "Payment Required" in exc_str or \
+               "407" in exc_str or "Proxy Authentication" in exc_str:
+                _mark_proxy_failed()
             LOG.warning("yt-dlp download attempt failed (client %s): %s", combo, exc)
             continue
+
+    # Retry without proxy if proxy was being used
+    if last_err and not _proxy_dead and _get_proxy():
+        LOG.info("Retrying download WITHOUT proxy for: %s", url)
+        try:
+            no_proxy_opts = {**opts}
+            no_proxy_opts.pop("proxy", None)
+            cookie = _get_cookie()
+            if cookie:
+                no_proxy_opts["cookiefile"] = cookie
+            with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                )
+                if info:
+                    path = ydl.prepare_filename(info)
+                    if os.path.exists(path):
+                        _mark_proxy_failed()
+                        return path
+                    base = os.path.splitext(path)[0]
+                    matches = sorted(glob.glob(f"{base}.*"),
+                                     key=os.path.getmtime, reverse=True)
+                    if matches:
+                        _mark_proxy_failed()
+                        return matches[0]
+        except Exception as exc_np:
+            LOG.warning("No-proxy download fallback also failed: %s", exc_np)
 
     # Ultimate fallback: try "b" format with default client
     if last_err:

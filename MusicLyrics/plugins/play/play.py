@@ -126,6 +126,16 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             )
         media_path, is_stream = await _get_audio_media(query)
         if not media_path:
+            # Fallback: try search+download with title as query
+            title_query = info.get("title", "")
+            channel_query = info.get("channel", "")
+            if title_query and title_query != "YouTube Audio":
+                LOG.info("YouTube URL extraction failed, trying search+download: %s", title_query)
+                filepath, dl_info = await search_and_download_audio(
+                    f"{title_query} {channel_query}".strip()
+                )
+                if filepath:
+                    return (dl_info or info), filepath, False
             raise ValueError("YouTube থেকে audio পাওয়া যায়নি। আবার চেষ্টা করুন।")
         return info, media_path, is_stream
 
