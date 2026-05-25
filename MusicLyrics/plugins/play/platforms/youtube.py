@@ -66,6 +66,10 @@ _INVIDIOUS_INSTANCES = [
 _COBALT_INSTANCES = [
     "https://api.cobalt.tools",
 ]
+# Allow custom Cobalt instance via env var (e.g., self-hosted)
+_cobalt_custom_url = os.environ.get("COBALT_API_URL", "").strip().rstrip("/")
+if _cobalt_custom_url:
+    _COBALT_INSTANCES.insert(0, _cobalt_custom_url)
 _COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
 
 _PROXY_HEADERS = {

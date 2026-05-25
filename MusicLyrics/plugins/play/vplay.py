@@ -259,6 +259,15 @@ async def vplay_command(client: Client, message: Message):
             "STRING_SESSION সেট করা আছে কিনা চেক করুন।"
         )
         return
+    except ProcessLookupError:
+        LOG.exception("ProcessLookupError in video stream for %s", chat_id)
+        await status_msg.edit_text(
+            "❌ ffprobe/ffmpeg subprocess ব্যর্থ হয়েছে।\n"
+            "Heroku-তে ffmpeg buildpack ইনস্টল আছে কিনা চেক করুন।\n\n"
+            "আবার `/vplay` দিয়ে চেষ্টা করুন — "
+            "auto-download fallback চেষ্টা করা হবে।"
+        )
+        return
     except Exception as exc:
         LOG.exception("Video stream start failed in %s", chat_id)
         await status_msg.edit_text(
