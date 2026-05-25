@@ -54,6 +54,9 @@ _PIPED_INSTANCES = [
     "https://pipedapi.drgns.space",
     "https://pipedapi.in.projectsegfau.lt",
     "https://pipedapi.us.projectsegfau.lt",
+    "https://pipedapi.frontendfriendly.xyz",
+    "https://api.piped.privacydev.net",
+    "https://pipedapi.ngn.tf",
 ]
 
 # Invidious instances as additional fallback (updated May 2026)
@@ -67,6 +70,9 @@ _INVIDIOUS_INSTANCES = [
     "https://inv.tux.pizza",
     "https://invidious.privacyredirect.com",
     "https://inv.n8pjl.ca",
+    "https://invidious.lunar.icu",
+    "https://invidious.perennialte.ch",
+    "https://inv.us.projectsegfau.lt",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -338,66 +344,93 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
         return None
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Try both v10+ endpoint (POST /) and legacy endpoint (POST /api/json)
+    _endpoints = ["/", "/api/json"]
+
     for instance in _COBALT_INSTANCES:
-        try:
-            payload = {
-                "url": yt_url,
-                "downloadMode": "audio" if audio_only else "auto",
-                "audioFormat": "opus",
-                "youtubeVideoCodec": "h264",
-                "videoQuality": "720",
-            }
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": _PROXY_HEADERS["User-Agent"],
-            }
-            if _COBALT_API_KEY:
-                headers["Authorization"] = f"Api-Key {_COBALT_API_KEY}"
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{instance}/",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        stream_url = data.get("url")
-                        if stream_url:
-                            LOG.info("Cobalt stream obtained from %s for %s (audio=%s)",
-                                     instance, video_id, audio_only)
-                            return stream_url
-                        # Cobalt may return a picker for videos with separate streams
-                        picker = data.get("picker")
-                        if picker and isinstance(picker, list):
-                            for p_item in picker:
-                                if audio_only and p_item.get("type") == "audio":
-                                    return p_item.get("url")
-                                if not audio_only and p_item.get("type") == "video":
-                                    return p_item.get("url")
-                            # Fallback: first item
-                            if picker:
-                                return picker[0].get("url")
-                    else:
-                        body = ""
-                        try:
-                            body = await resp.text()
-                        except Exception:
-                            pass
-                        if resp.status in (401, 403):
-                            LOG.warning(
-                                "Cobalt %s returned HTTP %d (auth error) for %s. "
-                                "Your COBALT_API_KEY may be invalid. "
-                                "Get a valid key from https://cobalt.tools",
-                                instance, resp.status, video_id,
-                            )
+        for endpoint in _endpoints:
+            try:
+                # v10+ payload format
+                if endpoint == "/":
+                    payload = {
+                        "url": yt_url,
+                        "downloadMode": "audio" if audio_only else "auto",
+                        "audioFormat": "opus",
+                        "youtubeVideoCodec": "h264",
+                        "videoQuality": "720",
+                    }
+                else:
+                    # Legacy /api/json format
+                    payload = {
+                        "url": yt_url,
+                        "isAudioOnly": audio_only,
+                        "aFormat": "opus",
+                        "vCodec": "h264",
+                        "vQuality": "720",
+                        "filenamePattern": "basic",
+                    }
+
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": _PROXY_HEADERS["User-Agent"],
+                }
+                if _COBALT_API_KEY:
+                    headers["Authorization"] = f"Api-Key {_COBALT_API_KEY}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{instance}{endpoint}",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=20),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            # v10+ format: {"url": "..."}
+                            stream_url = data.get("url")
+                            if stream_url:
+                                LOG.info("Cobalt stream obtained from %s%s for %s (audio=%s)",
+                                         instance, endpoint, video_id, audio_only)
+                                return stream_url
+                            # Cobalt may return a picker for videos with separate streams
+                            picker = data.get("picker")
+                            if picker and isinstance(picker, list):
+                                for p_item in picker:
+                                    if audio_only and p_item.get("type") == "audio":
+                                        return p_item.get("url")
+                                    if not audio_only and p_item.get("type") == "video":
+                                        return p_item.get("url")
+                                # Fallback: first item
+                                if picker:
+                                    return picker[0].get("url")
+                            # Legacy format: {"status": "stream", "url": "..."}
+                            if data.get("status") in ("stream", "redirect", "success"):
+                                stream_url = data.get("url")
+                                if stream_url:
+                                    LOG.info("Cobalt legacy stream from %s for %s",
+                                             instance, video_id)
+                                    return stream_url
                         else:
-                            LOG.debug("Cobalt %s returned HTTP %d for %s: %s",
-                                      instance, resp.status, video_id, body[:100])
-        except Exception as e:
-            LOG.debug("Cobalt %s failed for %s: %s", instance, video_id, e)
-            continue
+                            body = ""
+                            try:
+                                body = await resp.text()
+                            except Exception:
+                                pass
+                            if resp.status in (401, 403):
+                                LOG.warning(
+                                    "Cobalt %s%s returned HTTP %d (auth error) for %s. "
+                                    "Your COBALT_API_KEY may be invalid or expired. "
+                                    "Get a valid key from https://cobalt.tools",
+                                    instance, endpoint, resp.status, video_id,
+                                )
+                                break  # Don't try legacy endpoint with same bad key
+                            else:
+                                LOG.debug("Cobalt %s%s returned HTTP %d for %s: %s",
+                                          instance, endpoint, resp.status, video_id, body[:100])
+            except Exception as e:
+                LOG.debug("Cobalt %s%s failed for %s: %s", instance, endpoint, video_id, e)
+                continue
     return None
 
 
@@ -799,8 +832,15 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                                 len(direct), client["name"], video_id)
                         return data
                     else:
-                        LOG.debug("Innertube %s: %d formats but all cipher for %s",
-                                 client["name"], len(all_fmts), video_id)
+                        # Store cipher format count for logging
+                        cipher_count = len([f for f in all_fmts if f.get("signatureCipher")])
+                        LOG.debug("Innertube %s: %d formats but all cipher for %s "
+                                 "(cipher=%d, total=%d)",
+                                 client["name"], len(all_fmts), video_id,
+                                 cipher_count, len(all_fmts))
+                        # NOTE: We don't return cipher formats here because
+                        # they need signature decryption which Innertube alone
+                        # can't do. yt-dlp handles this in its fallback path.
 
         except Exception as e:
             LOG.debug("Innertube player %s error for %s: %s",
@@ -1000,9 +1040,10 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "fragment_retries": 5,
         "noplaylist": True,
         "no_color": True,
+        "noprogress": True,
         "logger": _ytdlp_logger,
-        "check_formats": False,       # CRITICAL: skip format verification on cloud
-        "allow_unplayable_formats": False,
+        "check_formats": "selected",    # Only verify the selected format, not all
+        "allow_unplayable_formats": True,  # Accept formats yt-dlp can't verify on cloud
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
             "proto:m3u8_native",       # prefer HLS (no signature needed)
@@ -1502,6 +1543,8 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             no_proxy_opts = _base_ytdlp_opts()
             no_proxy_opts.pop("proxy", None)  # Force no proxy
             no_proxy_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
+            no_proxy_opts["allow_unplayable_formats"] = True
+            no_proxy_opts["check_formats"] = False
             with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
@@ -1518,6 +1561,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         try:
             fb_opts = _base_ytdlp_opts()
             fb_opts["format"] = "b"
+            fb_opts["allow_unplayable_formats"] = True
             fb_opts.pop("proxy", None)  # Try without proxy for broader compatibility
             with yt_dlp.YoutubeDL(fb_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -1535,6 +1579,8 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             worst_opts = _base_ytdlp_opts()
             worst_opts.pop("proxy", None)  # No proxy
             worst_opts["format"] = "worst"  # even worst quality is better than nothing
+            worst_opts["allow_unplayable_formats"] = True
+            worst_opts["check_formats"] = False  # Skip ALL format verification
             with yt_dlp.YoutubeDL(worst_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
@@ -1543,6 +1589,26 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
                     return result
         except Exception as exc3:
             LOG.warning("Worst-format fallback also failed: %s", exc3)
+
+    # Ultimate fallback 3: try "default" client (yt-dlp auto-selects best)
+    if last_err:
+        LOG.info("Retrying with default yt-dlp client for: %s", url)
+        try:
+            default_opts = _base_ytdlp_opts()
+            default_opts.pop("proxy", None)
+            default_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
+            default_opts["allow_unplayable_formats"] = True
+            default_opts["check_formats"] = False
+            # Remove player_client restriction — let yt-dlp decide
+            default_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
+            with yt_dlp.YoutubeDL(default_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                result = _extract_stream_from_info(info, audio_only)
+                if result:
+                    LOG.info("Stream URL obtained via default-client fallback for %s", url)
+                    return result
+        except Exception as exc4:
+            LOG.warning("Default-client fallback also failed: %s", exc4)
 
     if last_err:
         LOG.error("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
@@ -2115,7 +2181,9 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     if last_err:
         LOG.info("Retrying download with permissive format 'b' for: %s", url)
         try:
-            fallback_opts = {**opts, "format": "b"}
+            fallback_opts = {**opts, "format": "b",
+                             "allow_unplayable_formats": True,
+                             "check_formats": False}
             cookie = _get_cookie()
             if cookie:
                 fallback_opts["cookiefile"] = cookie
@@ -2139,7 +2207,9 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     if last_err:
         LOG.info("Retrying download with 'worst' format for: %s", url)
         try:
-            worst_opts = {**opts, "format": "worst"}
+            worst_opts = {**opts, "format": "worst",
+                          "allow_unplayable_formats": True,
+                          "check_formats": False}
             cookie = _get_cookie()
             if cookie:
                 worst_opts["cookiefile"] = cookie
@@ -2158,6 +2228,35 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
                         return matches[0]
         except Exception as exc3:
             LOG.warning("Worst-format download fallback also failed: %s", exc3)
+
+    # Ultimate fallback 3: default yt-dlp client with no restrictions
+    if last_err:
+        LOG.info("Retrying download with default client for: %s", url)
+        try:
+            default_opts = {**opts, "format": "b",
+                            "allow_unplayable_formats": True,
+                            "check_formats": False}
+            default_opts.pop("proxy", None)
+            cookie = _get_cookie()
+            if cookie:
+                default_opts["cookiefile"] = cookie
+            # Remove player_client restriction
+            default_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
+            with yt_dlp.YoutubeDL(default_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=True)
+                )
+                if info:
+                    path = ydl.prepare_filename(info)
+                    if os.path.exists(path):
+                        return path
+                    base = os.path.splitext(path)[0]
+                    matches = sorted(glob.glob(f"{base}.*"),
+                                     key=os.path.getmtime, reverse=True)
+                    if matches:
+                        return matches[0]
+        except Exception as exc4:
+            LOG.warning("Default-client download fallback also failed: %s", exc4)
 
     if last_err:
         LOG.error("All yt-dlp download attempts failed: %s — %s", url, last_err)

@@ -5,6 +5,8 @@ from pyrogram.types import (
     Message,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
 )
 from pyrogram.enums import ChatType
 
@@ -19,6 +21,9 @@ except Exception:
 import logging
 
 _LOG = logging.getLogger(__name__)
+
+# Start video URL — shown alongside start photos on /start
+START_VIDEO_URL = "https://files.catbox.moe/2wy9qr.mp4"
 
 
 def _start_keyboard():
@@ -167,11 +172,29 @@ async def start_cmd(client, message: Message):
             mention=mention,
             bot_name=Config.BOT_NAME,
         )
+        # Send start photos + video as a media group, then caption with keyboard
         try:
-            await message.reply_photo(
-                photo=Config.START_IMG,
-                caption=text,
+            media_group = [
+                InputMediaPhoto(Config.START_IMG),
+                InputMediaVideo(START_VIDEO_URL),
+            ]
+            await client.send_media_group(message.chat.id, media_group)
+        except Exception as media_err:
+            _LOG.warning("Could not send start media group: %s", media_err)
+            # Fallback: send photo only
+            try:
+                await message.reply_photo(
+                    photo=Config.START_IMG,
+                    caption="",
+                )
+            except Exception:
+                pass
+        # Send the text + keyboard as a separate message
+        try:
+            await message.reply_text(
+                text,
                 reply_markup=_start_keyboard(),
+                disable_web_page_preview=True,
             )
         except Exception:
             await message.reply_text(text, reply_markup=_start_keyboard())

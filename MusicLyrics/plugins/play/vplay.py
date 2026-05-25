@@ -71,20 +71,30 @@ async def _get_video_media(url: str) -> tuple[str, bool]:
     """Get media path for video playback.
 
     Returns (media_path, is_stream_url).
-    Tries Innertube direct stream URL first (fastest, works on cloud),
-    falls back to download if stream URL fails.
+    On cloud (Heroku), downloading first is more reliable than stream URLs.
+    Tries stream URL first (fastest if it works), then downloads as fallback.
     """
-    # Try 1: Get direct stream URL (Innertube -> Piped -> Invidious -> yt-dlp)
+    # Try 1: Get direct stream URL (Cobalt -> Innertube -> Piped -> Invidious -> yt-dlp)
     stream_url = await get_video_stream_url(url)
     if stream_url:
         LOG.info("Using video stream URL for: %s", url)
         return stream_url, True
 
-    # Try 2: Download to disk (fallback)
+    # Try 2: Download to disk (more reliable on cloud — avoids signature issues)
     LOG.info("Video stream URL failed, downloading: %s", url)
     filepath = await download_video(url)
     if filepath and os.path.isfile(filepath):
         return filepath, False
+
+    # Try 3: Combined search+download (bypasses URL-specific issues)
+    from MusicLyrics.plugins.play.platforms.youtube import get_video_info
+    info = await get_video_info(url)
+    title = info.get("title", "") if info else ""
+    if title and title not in ("YouTube Video", "Unknown"):
+        LOG.info("Video URL extraction failed, trying search+download with title: %s", title)
+        filepath_sd, _ = await search_and_download_video(title)
+        if filepath_sd and os.path.isfile(filepath_sd):
+            return filepath_sd, False
 
     return "", False
 
