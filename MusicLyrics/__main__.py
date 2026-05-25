@@ -17,6 +17,7 @@ from pyrogram.errors import FloodWait
 
 from config import Config
 from MusicLyrics import bot, userbot, pytgcalls, __version__
+from MusicLyrics.bot import get_bot_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,7 +88,7 @@ async def _send_startup_message():
     """Send a branded startup notification."""
     if not Config.LOG_GROUP_ID and not Config.OWNER_ID:
         return
-    bot_me = await bot.get_me()
+    bot_me = await get_bot_info()
     user_info = "N/A (no userbot)"
     if userbot:
         try:
@@ -160,7 +161,7 @@ def _setup_event_logging():
     async def on_bot_added(client, message: Message):
         """Log when bot is added to a new group."""
         try:
-            me = await client.get_me()
+            me = await get_bot_info()
             for member in message.new_chat_members:
                 if member.id == me.id:
                     added_by = message.from_user.mention if message.from_user else "Unknown"
@@ -187,7 +188,7 @@ def _setup_event_logging():
     async def on_bot_removed(client, message: Message):
         """Log when bot is removed from a group."""
         try:
-            me = await client.get_me()
+            me = await get_bot_info()
             if message.left_chat_member and message.left_chat_member.id == me.id:
                 removed_by = message.from_user.mention if message.from_user else "Unknown"
                 log_to_group(
@@ -358,8 +359,8 @@ async def main():
     except Exception as e:
         LOG.warning("Post-start webhook delete failed: %s", e)
 
-    # Verify bot can receive updates
-    bot_me = await bot.get_me()
+    # Verify bot can receive updates (also populates the cache)
+    bot_me = await get_bot_info()
     LOG.info("Bot identity: @%s (ID: %d)", bot_me.username, bot_me.id)
 
     if Config.STRING_SESSION and userbot and pytgcalls:

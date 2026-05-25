@@ -18,13 +18,13 @@ from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatType
 
-from MusicLyrics.bot import bot
+from MusicLyrics.bot import bot, get_bot_info
 from config import Config
 
 LOG = logging.getLogger(__name__)
 
 # ── Conversation history per chat ─────────────────────────────────────────────
-_MAX_HISTORY = 10
+_MAX_HISTORY = 20  # Increased for better context
 _chat_histories: dict[int, deque] = {}
 
 # ── Track recent replies to avoid repetition ──────────────────────────────────
@@ -175,10 +175,35 @@ def _smart_reply(text: str, chat_id: int) -> str:
 # ── Gemini API models (ordered by preference) ────────────────────────────────
 _GEMINI_MODELS = [
     "gemini-2.5-flash",            # Newest, best quality
+    "gemini-2.5-flash-lite",       # Lighter, higher quota
     "gemini-2.0-flash-lite",       # Highest free quota
     "gemini-2.0-flash",            # Standard
     "gemini-1.5-flash",            # Fallback
 ]
+
+# ── Enhanced system prompt for better AI responses ────────────────────────────
+_SYSTEM_PROMPT = (
+    "You are MusicLyrics Bot — a witty, fun, and helpful Telegram music bot. "
+    "You chat naturally like a real friend in Bengali (বাংলা) or English, "
+    "matching whatever language the user writes in.\n\n"
+    "Guidelines:\n"
+    "- Keep replies concise (1-4 sentences) but meaningful and engaging\n"
+    "- Be warm, witty, and use casual tone — like chatting with a friend\n"
+    "- Use relevant emojis naturally but don't overdo it\n"
+    "- NEVER repeat your previous replies — always say something new\n"
+    "- If asked about music/songs, suggest /play, /vplay, /song commands\n"
+    "- If asked about games, mention /quiz, /truth, /dare, /ttt, /flip\n"
+    "- If asked what you can do, give a brief overview of your features\n"
+    "- Answer factual questions accurately when you know the answer\n"
+    "- For questions you don't know, be honest but friendly about it\n"
+    "- If someone is rude, stay polite but firm\n"
+    "- If someone shares feelings, be empathetic and supportive\n"
+    "- You can joke, be sarcastic (lightheartedly), and have personality\n"
+    "- You are created by RajSukh (Owner), support group link available via /start\n"
+    "- Your features: music streaming in VC (audio + video), song download, "
+    "lyrics, games, group security (ban/mute/warn), AI chat, translation, "
+    "sticker tools, and more\n"
+)
 
 
 async def _ai_response(text: str, chat_id: int = 0, user_name: str = "") -> str:
@@ -214,17 +239,6 @@ async def _try_gemini(
         f"models/{model}:generateContent"
     )
 
-    system_prompt = (
-        "You are MusicLyrics Bot, a fun and helpful Telegram group bot. "
-        "Reply in the same language the user writes in (Bengali/Bangla or English). "
-        "Keep replies short (1-3 sentences), friendly, and casual. "
-        "You can suggest music commands like /play, /vplay, /song when relevant. "
-        "Be witty, entertaining, and always vary your responses. "
-        "Never repeat the same reply. "
-        "If someone asks about your capabilities, mention music streaming, "
-        "games (/quiz, /truth, /dare, /ttt), and other features."
-    )
-
     contents = []
     for role, msg in history:
         contents.append({"role": role, "parts": [{"text": msg}]})
@@ -233,10 +247,10 @@ async def _try_gemini(
     contents.append({"role": "user", "parts": [{"text": user_text}]})
 
     payload = {
-        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
         "contents": contents,
         "generationConfig": {
-            "maxOutputTokens": 200,
+            "maxOutputTokens": 300,
             "temperature": 0.9,
             "topP": 0.95,
         },
@@ -247,7 +261,7 @@ async def _try_gemini(
             async with session.post(
                 url, json=payload,
                 headers={"x-goog-api-key": Config.AI_API_KEY},
-                timeout=aiohttp.ClientTimeout(total=12),
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -314,7 +328,7 @@ async def _try_react(client, message: Message):
         pass
 
 
-# ── Filters ───────────────────────────────────────────────────────────────────
+# ── Filters (using cached get_bot_info to avoid FloodWait) ───────────────────
 
 async def _is_reply_to_bot(_, client, message: Message) -> bool:
     if not message.text or message.text.startswith("/"):
@@ -322,7 +336,7 @@ async def _is_reply_to_bot(_, client, message: Message) -> bool:
     if not message.reply_to_message or not message.reply_to_message.from_user:
         return False
     try:
-        me = await client.get_me()
+        me = await get_bot_info()
         return message.reply_to_message.from_user.id == me.id
     except Exception:
         return False
@@ -334,7 +348,7 @@ async def _is_bot_mentioned(_, client, message: Message) -> bool:
     if not message.text or message.text.startswith("/"):
         return False
     try:
-        me = await client.get_me()
+        me = await get_bot_info()
         return f"@{me.username}" in (message.text or "")
     except Exception:
         return False
@@ -370,7 +384,7 @@ async def ai_reply_when_replied(client, message: Message):
 @bot.on_message(filters.group & _bot_mentioned_filter, group=51)
 async def ai_reply_when_mentioned(client, message: Message):
     try:
-        me = await client.get_me()
+        me = await get_bot_info()
         clean_text = (message.text or "").replace(f"@{me.username}", "").strip()
         if not clean_text:
             clean_text = "hi"
