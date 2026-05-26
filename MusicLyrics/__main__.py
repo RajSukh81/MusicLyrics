@@ -15,12 +15,31 @@ from pathlib import Path
 # Unauthorized copying, modification, or redistribution is prohibited.
 # ─────────────────────────────────────────────────────────────────────────
 
+import hashlib
+import hmac
+
 _LICENSE_OWNER = "R4J_81"
 _LICENSE_REPO = "https://github.com/RajSukh81/MusicLyrics"
+# ── HMAC secret used to generate and validate license keys ──
+# This is the master secret. Only the owner (R4J_81) knows this.
+# Keys are generated as: HMAC-SHA256(secret, bot_token)[:16] uppercased hex
+_LICENSE_SECRET = b"R4J81_MusicLyrics_2026_PropSecret"
+
+
+def _generate_license_key(bot_token: str) -> str:
+    """Generate a valid LICENSE_KEY for a given BOT_TOKEN.
+
+    This function is for the OWNER to use when issuing keys.
+    Run:  python3 -c "from MusicLyrics.__main__ import _generate_license_key; print(_generate_license_key('YOUR_BOT_TOKEN'))"
+    """
+    digest = hmac.new(_LICENSE_SECRET, bot_token.encode(), hashlib.sha256).hexdigest()
+    return f"ML-{digest[:8].upper()}-{digest[8:16].upper()}"
 
 
 def _verify_license():
-    """Verify that the LICENSE file is present and unmodified."""
+    """Verify LICENSE file + LICENSE_KEY environment variable."""
+
+    # ── Step 1: Check LICENSE file ──
     license_path = Path(__file__).parent.parent / "LICENSE"
 
     if not license_path.exists():
@@ -46,7 +65,6 @@ def _verify_license():
         print("❌ Cannot read LICENSE file. Aborting.")
         sys.exit(1)
 
-    # Verify key markers exist
     required_markers = [
         _LICENSE_OWNER,
         "PROPRIETARY LICENSE",
@@ -65,8 +83,61 @@ def _verify_license():
             )
             sys.exit(1)
 
+    print(f"✅ License file OK — {_LICENSE_OWNER} Proprietary License")
+
+    # ── Step 2: Validate LICENSE_KEY from environment variable ──
+    license_key = os.environ.get("LICENSE_KEY", "").strip()
+    bot_token = os.environ.get("BOT_TOKEN", "").strip()
+
+    if not license_key:
+        print(
+            "\n"
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  ❌  LICENSE_KEY NOT SET!                                   ║\n"
+            "║                                                            ║\n"
+            "║  To deploy this bot you need a valid LICENSE_KEY.          ║\n"
+            "║  Set it in your environment variables / Config Vars:       ║\n"
+            "║                                                            ║\n"
+            "║    LICENSE_KEY=ML-XXXXXXXX-XXXXXXXX                        ║\n"
+            "║                                                            ║\n"
+            "║  Get your key from the owner:                              ║\n"
+            "║    Telegram: @R4J_81                                       ║\n"
+            "║    GitHub:   github.com/RajSukh81                          ║\n"
+            "║                                                            ║\n"
+            "║  Send your BOT_TOKEN to @R4J_81 to receive your key.      ║\n"
+            "╚══════════════════════════════════════════════════════════════╝\n"
+        )
+        sys.exit(1)
+
+    if not bot_token:
+        print("❌ BOT_TOKEN is not set. Cannot validate license.")
+        sys.exit(1)
+
+    # Generate expected key from bot_token and compare
+    expected_key = _generate_license_key(bot_token)
+
+    if not hmac.compare_digest(license_key, expected_key):
+        print(
+            "\n"
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  ❌  INVALID LICENSE_KEY!                                   ║\n"
+            "║                                                            ║\n"
+            "║  The LICENSE_KEY you provided does not match your          ║\n"
+            "║  BOT_TOKEN. Each key is unique per bot.                    ║\n"
+            "║                                                            ║\n"
+            "║  Possible reasons:                                         ║\n"
+            "║    • Wrong LICENSE_KEY                                      ║\n"
+            "║    • BOT_TOKEN changed after key was issued                ║\n"
+            "║    • Key was generated for a different bot                 ║\n"
+            "║                                                            ║\n"
+            "║  Contact @R4J_81 on Telegram for a new key.               ║\n"
+            "╚══════════════════════════════════════════════════════════════╝\n"
+        )
+        sys.exit(1)
+
     print(
-        f"✅ License verified — {_LICENSE_OWNER} Proprietary License\n"
+        f"✅ License key validated — {license_key}\n"
+        f"   Authorized by: {_LICENSE_OWNER}\n"
         f"   Source: {_LICENSE_REPO}"
     )
 

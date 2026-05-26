@@ -16,6 +16,7 @@ services:
       - .env
     environment:
       - MONGO_URL=mongodb://mongo:27017/musiclyrics
+      - LICENSE_KEY=${LICENSE_KEY}
     volumes:
       - ./downloads:/app/downloads
     depends_on:

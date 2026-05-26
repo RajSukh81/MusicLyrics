@@ -30,6 +30,10 @@
       "description": "Telegram API ID — get from https://my.telegram.org/apps",
       "required": true
     },
+    "LICENSE_KEY": {
+      "description": "⚠️ REQUIRED — License key to run MusicLyrics. Get your key from @R4J_81 on Telegram. Send your BOT_TOKEN to receive a unique key. Format: ML-XXXXXXXX-XXXXXXXX",
+      "required": true
+    },
     "API_HASH": {
       "description": "Telegram API Hash — get from https://my.telegram.org/apps",
       "required": true
