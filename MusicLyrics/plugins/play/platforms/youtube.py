@@ -108,8 +108,8 @@ _PROXY_HEADERS = {
 _proxy_dead = False
 _proxy_fail_count = 0
 _proxy_dead_since: float = 0.0  # timestamp when proxy was disabled
-_PROXY_FAIL_THRESHOLD = 2  # Disable after 2 consecutive failures
-_PROXY_RECOVERY_SECONDS = 300  # Re-try proxy every 5 minutes
+_PROXY_FAIL_THRESHOLD = 1  # Disable after 1 failure (fast fail — don't waste time)
+_PROXY_RECOVERY_SECONDS = 600  # Re-try proxy every 10 minutes
 
 
 def _mark_proxy_failed():
@@ -729,7 +729,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
                 api_url,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=8),
                 **_aio_request_kwargs(),
             ) as resp:
                 if resp.status != 200:
@@ -760,6 +760,12 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
                         LOG.info("Innertube WEB+cookies: %d cipher formats for %s (accepted)",
                                  len(all_fmts), video_id)
                         return data
+    except asyncio.TimeoutError:
+        LOG.warning("Innertube WEB+cookies TIMEOUT for %s — proxy may be dead", video_id)
+        _mark_proxy_failed()
+    except (aiohttp.ClientConnectorError, aiohttp.ClientOSError, OSError) as e:
+        LOG.warning("Innertube WEB+cookies connection error for %s: %s", video_id, e)
+        _mark_proxy_failed()
     except Exception as e:
         LOG.debug("Innertube WEB+cookies error for %s: %s", video_id, e)
 
@@ -772,7 +778,13 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
     Tries WEB client with cookies first (best for cloud servers),
     then mobile clients for direct stream URLs without signature cipher.
     Auto-detects and disables broken proxies (402 Payment Required).
+    Skips entirely if proxy is dead (Innertube needs proxy on cloud).
     """
+    # If proxy is dead and we're on cloud, Innertube won't work — skip quickly
+    if _proxy_dead and not _get_proxy():
+        LOG.debug("Innertube skipped: proxy is dead, Innertube needs proxy on cloud")
+        return None
+
     # Track cipher-only data as fallback (better than nothing)
     _last_innertube_cipher_data = {}
 
@@ -817,7 +829,7 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                     api_url,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=8),
                     **_aio_request_kwargs(),
                 ) as resp:
                     if resp.status != 200:
@@ -868,6 +880,16 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                         if not _last_innertube_cipher_data:
                             _last_innertube_cipher_data.update(data)
 
+        except asyncio.TimeoutError:
+            LOG.warning("Innertube player %s TIMEOUT for %s — marking proxy dead",
+                       client["name"], video_id)
+            _mark_proxy_failed()
+            continue
+        except (aiohttp.ClientConnectorError, aiohttp.ClientOSError, OSError) as e:
+            LOG.warning("Innertube player %s connection error for %s: %s — marking proxy dead",
+                       client["name"], video_id, e)
+            _mark_proxy_failed()
+            continue
         except Exception as e:
             LOG.debug("Innertube player %s error for %s: %s",
                      client["name"], video_id, e)
@@ -1069,9 +1091,9 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        "socket_timeout": 30,
-        "retries": 5,
-        "fragment_retries": 5,
+        "socket_timeout": 15,
+        "retries": 3,
+        "fragment_retries": 3,
         "noplaylist": True,
         "no_color": True,
         "noprogress": True,
@@ -1582,6 +1604,25 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         fmt = "ba*/b"  # most permissive: best audio (any), fallback to best anything
     else:
         fmt = "bv*[height<=720]+ba*/bv*+ba*/b"  # very permissive video+audio
+
+    # If proxy is dead, skip all proxy attempts and go direct immediately
+    if _proxy_dead:
+        LOG.info("Proxy is dead — skipping proxy attempts, going direct for: %s", url)
+        combos = _get_client_combos()
+        for combo in combos[:3]:  # Try first 3 combos only (speed)
+            opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
+            opts.pop("proxy", None)  # Force no proxy
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    result = _extract_stream_from_info(info, audio_only)
+                    if result:
+                        LOG.info("Stream URL obtained (no proxy) for %s (client: %s)", url, combo)
+                        return result
+            except Exception as exc:
+                LOG.warning("Stream URL no-proxy attempt failed (client %s): %s", combo, exc)
+                continue
+        return None
 
     last_err = None
     for combo in _get_client_combos():
@@ -2138,7 +2179,7 @@ async def _download_stream(stream_url: str, filepath: str,
             async with session.get(
                 stream_url,
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=180),
+                timeout=aiohttp.ClientTimeout(total=120, connect=10),
                 **req_kwargs,
             ) as resp:
                 if resp.status != 200:
@@ -2196,6 +2237,11 @@ def _get_info_sync(url: str) -> Optional[dict]:
 async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
     import yt_dlp
     loop = asyncio.get_running_loop()
+
+    # If proxy is dead, remove proxy from opts immediately to avoid timeouts
+    if _proxy_dead:
+        opts.pop("proxy", None)
+        LOG.info("Proxy is dead — running yt-dlp without proxy for: %s", url)
 
     last_err = None
     for combo in _get_client_combos():
