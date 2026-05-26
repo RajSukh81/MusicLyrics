@@ -100,10 +100,16 @@ def _get_history(chat_id: int) -> deque:
 # the next one picks up. All 2.0 models have separate quotas.
 _GEMINI_MODELS = [
     "gemini-2.5-flash",            # Latest 2.5 flash — best quality + speed
-    "gemini-2.5-flash-lite-preview-06-17",  # Lightweight 2.5 preview
-    "gemini-2.0-flash-lite",       # Still works, highest free-tier quota
-    "gemini-2.0-flash",            # Fallback (may 404, kept for retry)
+    "gemini-2.0-flash",            # Stable 2.0 flash — good fallback
+    "gemini-2.0-flash-lite",       # Lite model — NO system_instruction support
+    "gemini-1.5-flash",            # Legacy fallback (may 404)
 ]
+
+# Models that do NOT support the system_instruction field.
+# For these, the system prompt is prepended as the first user message.
+_NO_SYSTEM_INSTRUCTION_MODELS = {
+    "gemini-2.0-flash-lite",
+}
 
 # Also try v1 endpoint (not just v1beta) as some models are only on v1
 _GEMINI_API_VERSIONS = ["v1beta", "v1"]
@@ -389,23 +395,50 @@ async def _try_gemini(
         user_text = f"[{user_name}]: {text}"
     contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-    payload = {
-        "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": 500,
-            "temperature": 0.8,
-            "topP": 0.95,
-            "topK": 40,
-        },
-        # Safety settings — allow most content for natural conversation
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-        ],
-    }
+    # Some models (e.g. gemini-2.0-flash-lite) do NOT support the
+    # "system_instruction" field and return 400 "Unknown name" error.
+    # For those, prepend the system prompt as the first user message instead.
+    supports_system_instruction = model not in _NO_SYSTEM_INSTRUCTION_MODELS
+
+    if supports_system_instruction:
+        payload = {
+            "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 500,
+                "temperature": 0.8,
+                "topP": 0.95,
+                "topK": 40,
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            ],
+        }
+    else:
+        # Inject system prompt as the first user turn for models without
+        # system_instruction support
+        system_as_user = [
+            {"role": "user", "parts": [{"text": f"[SYSTEM INSTRUCTIONS — follow these strictly]\n{_SYSTEM_PROMPT}"}]},
+            {"role": "model", "parts": [{"text": "Understood! I will follow these instructions. I am MusicLyrics Bot, ready to help!"}]},
+        ]
+        payload = {
+            "contents": system_as_user + contents,
+            "generationConfig": {
+                "maxOutputTokens": 500,
+                "temperature": 0.8,
+                "topP": 0.95,
+                "topK": 40,
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            ],
+        }
 
     try:
         async with aiohttp.ClientSession() as session:

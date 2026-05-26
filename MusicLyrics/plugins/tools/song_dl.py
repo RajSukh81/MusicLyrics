@@ -14,28 +14,44 @@ from MusicLyrics.plugins.play.platforms.youtube import (
     search_youtube,
     download_audio as yt_download_audio,
     download_video as yt_download_video,
+    search_and_download_audio,
+    search_and_download_video,
 )
 
 LOG = logging.getLogger(__name__)
 
 
 async def _download(query: str, audio_only: bool = True) -> tuple[str | None, dict | None]:
-    """Search YouTube and download audio/video, return (filepath, info)."""
-    # Use youtube-search-python (no bot detection) for search
+    """Search YouTube and download audio/video, return (filepath, info).
+
+    Uses search -> download flow first, then falls back to
+    search_and_download (atomic yt-dlp search+download) on failure.
+    """
+    # Method 1: Separate search + download (uses Cobalt/Piped/Invidious)
     info = await search_youtube(query)
-    if not info:
-        return None, None
+    if info:
+        url = info.get("url", query)
+        try:
+            if audio_only:
+                filepath = await yt_download_audio(url)
+            else:
+                filepath = await yt_download_video(url)
+            if filepath and os.path.isfile(filepath):
+                return filepath, info
+        except Exception:
+            LOG.warning("Primary download failed for %s, trying atomic fallback", query)
 
-    url = info.get("url", query)
-
-    # Download using yt-dlp with anti-bot mitigations
-    if audio_only:
-        filepath = await yt_download_audio(url)
-    else:
-        filepath = await yt_download_video(url)
-
-    if filepath and os.path.isfile(filepath):
-        return filepath, info
+    # Method 2: Atomic search+download via yt-dlp (most reliable fallback)
+    LOG.info("Using atomic search+download fallback for: %s", query)
+    try:
+        if audio_only:
+            filepath, info = await search_and_download_audio(query)
+        else:
+            filepath, info = await search_and_download_video(query)
+        if filepath and os.path.isfile(filepath):
+            return filepath, info
+    except Exception:
+        LOG.warning("Atomic search+download also failed for: %s", query)
 
     return None, info
 
