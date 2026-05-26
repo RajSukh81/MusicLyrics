@@ -14,7 +14,7 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white" alt="Python"></a>
   <a href="https://docs.pyrogram.org/"><img src="https://img.shields.io/badge/Pyrogram-2.x-green?logo=telegram&logoColor=white" alt="Pyrogram"></a>
   <a href="https://github.com/MarshalX/tgcalls"><img src="https://img.shields.io/badge/py--tgcalls-streaming-orange" alt="py-tgcalls"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://github.com/RajSukh81/MusicLyrics/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Proprietary-red.svg" alt="License: Proprietary"></a>
 </p>
 
 <h2 align="center">One-Click Deploy / এক ক্লিকে ডিপ্লয়</h2>
@@ -354,9 +354,25 @@ MusicLyrics/
 
 ## Credits
 
-- **MusicLyrics** -- Built and maintained by [R4J](https://t.me/R4J_81)
+- **MusicLyrics** -- Built and maintained by [R4J_81](https://t.me/R4J_81)
 - Powered by [Pyrogram](https://docs.pyrogram.org/) and [py-tgcalls](https://github.com/MarshalX/tgcalls)
 - Audio/video downloads via [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+
+---
+
+## License
+
+**This project is proprietary software.** See the [LICENSE](LICENSE) file for full terms.
+
+- **Deploy/Use:** Anyone can deploy and run their own instance.
+- **Copy/Modify:** Strictly prohibited without written permission from the owner.
+- **Source Code:** Only available at [github.com/RajSukh81/MusicLyrics](https://github.com/RajSukh81/MusicLyrics).
+- **Attribution:** All instances must credit **R4J_81** as the original author.
+- **Unauthorized copies** will be subject to DMCA takedown.
+
+**Contact for permission:** [@R4J_81 on Telegram](https://t.me/R4J_81) or [GitHub](https://github.com/RajSukh81)
+
+> **Copyright (c) 2026 R4J_81 — All Rights Reserved.**
 
 ---
 

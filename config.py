@@ -1,3 +1,9 @@
+# ─────────────────────────────────────────────────────────────────────────
+# MusicLyrics — Copyright (c) 2026 R4J_81 (https://github.com/RajSukh81)
+# Proprietary License — See LICENSE file for terms.
+# Unauthorized copying, modification, or redistribution is prohibited.
+# ─────────────────────────────────────────────────────────────────────────
+
 import os
 from dotenv import load_dotenv
 

@@ -9,6 +9,71 @@ import sys
 import traceback
 from pathlib import Path
 
+# ── LICENSE ENFORCEMENT ──────────────────────────────────────────────────
+# This software is proprietary. See LICENSE file for full terms.
+# Copyright (c) 2026 R4J_81 (https://github.com/RajSukh81)
+# Unauthorized copying, modification, or redistribution is prohibited.
+# ─────────────────────────────────────────────────────────────────────────
+
+_LICENSE_OWNER = "R4J_81"
+_LICENSE_REPO = "https://github.com/RajSukh81/MusicLyrics"
+
+
+def _verify_license():
+    """Verify that the LICENSE file is present and unmodified."""
+    license_path = Path(__file__).parent.parent / "LICENSE"
+
+    if not license_path.exists():
+        print(
+            "\n"
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  ❌  LICENSE FILE MISSING!                                  ║\n"
+            "║                                                            ║\n"
+            "║  This software is proprietary and requires the LICENSE     ║\n"
+            "║  file to be present. Unauthorized use is prohibited.       ║\n"
+            "║                                                            ║\n"
+            f"║  Owner: {_LICENSE_OWNER:<51}║\n"
+            f"║  Repo:  {_LICENSE_REPO:<51}║\n"
+            "║                                                            ║\n"
+            "║  Please restore the LICENSE file or contact the owner.     ║\n"
+            "╚══════════════════════════════════════════════════════════════╝\n"
+        )
+        sys.exit(1)
+
+    try:
+        content = license_path.read_text(encoding="utf-8")
+    except Exception:
+        print("❌ Cannot read LICENSE file. Aborting.")
+        sys.exit(1)
+
+    # Verify key markers exist
+    required_markers = [
+        _LICENSE_OWNER,
+        "PROPRIETARY LICENSE",
+        "All Rights Reserved",
+        "RajSukh81",
+        "STRICTLY PROHIBITED",
+    ]
+    for marker in required_markers:
+        if marker not in content:
+            print(
+                f"\n❌ LICENSE file has been tampered with!\n"
+                f"   Missing required text: '{marker}'\n"
+                f"   Owner: {_LICENSE_OWNER}\n"
+                f"   Repo: {_LICENSE_REPO}\n"
+                f"\n   Restore the original LICENSE file to continue.\n"
+            )
+            sys.exit(1)
+
+    print(
+        f"✅ License verified — {_LICENSE_OWNER} Proprietary License\n"
+        f"   Source: {_LICENSE_REPO}"
+    )
+
+
+# Run license check immediately on import
+_verify_license()
+
 # ── CRITICAL: Monkey-patch asyncio subprocess to fix ProcessLookupError ──
 # py-tgcalls (NTgCalls) uses asyncio subprocesses for ffprobe to analyze
 # media before streaming. On Heroku and other cloud platforms, the ffprobe
