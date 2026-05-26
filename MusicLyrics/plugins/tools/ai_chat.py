@@ -40,7 +40,49 @@ _MAX_COOLDOWN_MULTIPLIER = 4.0
 _EMOJI_REACTIONS = [
     "\U0001f44d", "\u2764\ufe0f", "\U0001f525", "\U0001f60d",
     "\U0001f929", "\U0001f44f", "\U0001f601", "\U0001f60e",
+    "\U0001f92f", "\U0001f389", "\U0001f4af", "\U0001f923",
+    "\U0001f64f", "\u26a1", "\U0001f31a",
 ]
+
+# ── Sticker file_ids for sending with AI replies ─────────────────────────────
+# Categories mapped to keyword patterns for contextual sticker sending.
+# These are public sticker file_ids from common Telegram sticker packs.
+_STICKER_KEYWORDS = {
+    "happy": {
+        "keywords": ["happy", "খুশি", "ভালো", "দারুণ", "awesome", "great", "🎉", "😊", "😁", "হাসি", "মজা", "fun"],
+        "stickers": [
+            "CAACAgIAAxkBAAEBjN1kXZCG5PuIZWTwNzQ2Ybvqjy1zGwACEQADwDZPE_lqX5qklMEYLwQ",
+            "CAACAgIAAxkBAAEBjN9kXZCrYi5MzWbOmhPQYFXJNpYAAbQAAhIAA8A2TxMCnMnjkqQV1i8E",
+        ],
+    },
+    "sad": {
+        "keywords": ["sad", "দুঃখ", "কষ্ট", "মন খারাপ", "crying", "😢", "😭", "কান্না"],
+        "stickers": [
+            "CAACAgIAAxkBAAEBjOFkXZC2TL9kZ3dQk3Bj5mN0aahwmgACDAADwDZPE8xyMGwsGNfqLwQ",
+        ],
+    },
+    "love": {
+        "keywords": ["love", "ভালোবাসা", "প্রেম", "❤️", "😍", "ভালোবাসি", "পছন্দ", "miss"],
+        "stickers": [
+            "CAACAgIAAxkBAAEBjONkXZC_TqzrKA8_5mcI4M3WqbSfZAACDgADwDZPEwZZOGMecFaILwQ",
+        ],
+    },
+    "greeting": {
+        "keywords": ["hi", "hello", "হ্যালো", "হাই", "নমস্কার", "hey", "সুপ্রভাত"],
+        "stickers": [
+            "CAACAgIAAxkBAAEBjOVkXZDIxuSMixqrAAFlaG0jFGEr_nkAAg8AA8A2TxP2aWMj6Y5yYC8E",
+        ],
+    },
+    "thanks": {
+        "keywords": ["thanks", "ধন্যবাদ", "thank you", "ty", "thx", "শুকরিয়া"],
+        "stickers": [
+            "CAACAgIAAxkBAAEBjOdkXZDThfD5HqlOavK8TfXPFWEJqgACEAADwDZPE5BC-2FQMJN8LwQ",
+        ],
+    },
+}
+
+# Probability of sending a sticker with AI reply (40%)
+_STICKER_SEND_PROBABILITY = 0.4
 
 
 def _get_history(chat_id: int) -> deque:
@@ -57,8 +99,10 @@ def _get_history(chat_id: int) -> deque:
 # Strategy: Use multiple VALID models so when one hits 429 rate limit,
 # the next one picks up. All 2.0 models have separate quotas.
 _GEMINI_MODELS = [
-    "gemini-2.0-flash-lite",       # Highest free-tier quota, fastest
-    "gemini-2.0-flash",            # Good quality + speed balance
+    "gemini-2.5-flash",            # Latest 2.5 flash — best quality + speed
+    "gemini-2.5-flash-lite-preview-06-17",  # Lightweight 2.5 preview
+    "gemini-2.0-flash-lite",       # Still works, highest free-tier quota
+    "gemini-2.0-flash",            # Fallback (may 404, kept for retry)
 ]
 
 # Also try v1 endpoint (not just v1beta) as some models are only on v1
@@ -440,8 +484,10 @@ async def _try_gemini(
 # ── Reactions ─────────────────────────────────────────────────────────────────
 
 async def _try_react(client, message: Message):
+    """Send a random emoji reaction on the user's message."""
     try:
         emoji = random.choice(_EMOJI_REACTIONS)
+        # Method 1: pyrofork / pyrogram v2 with ReactionTypeEmoji list
         try:
             from pyrogram.types import ReactionTypeEmoji
             await client.send_reaction(
@@ -452,16 +498,60 @@ async def _try_react(client, message: Message):
             return
         except (ImportError, TypeError, AttributeError):
             pass
+        # Method 2: plain emoji string
         try:
             await client.send_reaction(
                 chat_id=message.chat.id,
                 message_id=message.id,
                 emoji=emoji,
             )
+            return
+        except TypeError:
+            pass
+        # Method 3: reaction parameter
+        try:
+            from pyrogram.types import ReactionTypeEmoji
+            await client.send_reaction(
+                chat_id=message.chat.id,
+                message_id=message.id,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+            return
         except Exception:
             pass
     except Exception:
         pass
+
+
+async def _try_send_sticker(client, message: Message, user_text: str, reply_text: str):
+    """Optionally send a contextual sticker after the AI reply.
+
+    Uses keyword matching on both user text and AI reply to pick a relevant
+    sticker. Only sends with a probability to avoid being spammy.
+    """
+    try:
+        if random.random() > _STICKER_SEND_PROBABILITY:
+            return  # Skip most of the time to not be spammy
+
+        combined = (user_text + " " + reply_text).lower()
+        matched_stickers = []
+
+        for category, data in _STICKER_KEYWORDS.items():
+            for kw in data["keywords"]:
+                if kw.lower() in combined:
+                    matched_stickers.extend(data["stickers"])
+                    break  # Only match once per category
+
+        if not matched_stickers:
+            return  # No matching sticker found
+
+        sticker_id = random.choice(matched_stickers)
+        await client.send_sticker(
+            chat_id=message.chat.id,
+            sticker=sticker_id,
+        )
+    except Exception as e:
+        LOG.debug("Sticker send failed (non-critical): %s", e)
 
 
 # ── Filters (using cached get_bot_info to avoid FloodWait) ───────────────────
@@ -503,16 +593,17 @@ def _get_user_name(message: Message) -> str:
 @bot.on_message(filters.group & _reply_to_bot_filter, group=50)
 async def ai_reply_when_replied(client, message: Message):
     try:
-        await _try_react(client, message)
         user_text = message.text or ""
         if not user_text.strip():
             return
+        await _try_react(client, message)
         response = await _ai_response(
             user_text, chat_id=message.chat.id,
             user_name=_get_user_name(message),
         )
         if response:
             await message.reply_text(response)
+            await _try_send_sticker(client, message, user_text, response)
     except Exception:
         LOG.exception("AI reply error")
 
@@ -531,6 +622,7 @@ async def ai_reply_when_mentioned(client, message: Message):
         )
         if response:
             await message.reply_text(response)
+            await _try_send_sticker(client, message, clean_text, response)
     except Exception:
         LOG.exception("AI mention reply error")
 
@@ -548,5 +640,6 @@ async def ai_reply_private(client, message: Message):
         )
         if response:
             await message.reply_text(response)
+            await _try_send_sticker(client, message, user_text, response)
     except Exception:
         LOG.exception("AI private reply error")
