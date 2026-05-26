@@ -1,6 +1,7 @@
 """Emoji tools plugin for MusicLyrics bot."""
 
 import random
+import asyncio
 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -15,6 +16,56 @@ EMOJI_LIST = [
     "\U0001f98b", "\U0001f409", "\U0001f355", "\U0001f3ae", "\U0001f3c6",
     "\U0001f48e", "\U0001f680", "\U0001f338", "\U0001f340", "\U0001f984",
 ]
+
+# Emoji art patterns
+_EMOJI_ART = {
+    "heart": [
+        " {e} {e}   {e} {e} ",
+        "{e} {e} {e} {e} {e} {e}",
+        "{e} {e} {e} {e} {e} {e}",
+        " {e} {e} {e} {e} {e} ",
+        "  {e} {e} {e} {e}  ",
+        "   {e} {e} {e}   ",
+        "    {e} {e}    ",
+        "     {e}     ",
+    ],
+    "star": [
+        "     {e}     ",
+        "    {e}{e}{e}    ",
+        "   {e} {e} {e}   ",
+        "{e}{e}{e}{e}{e}{e}{e}{e}{e}",
+        " {e} {e}   {e} {e} ",
+        "  {e} {e} {e} {e}  ",
+        " {e}{e}   {e}{e} ",
+        "{e} {e}     {e} {e}",
+    ],
+    "diamond": [
+        "    {e}    ",
+        "   {e} {e}   ",
+        "  {e}   {e}  ",
+        " {e}     {e} ",
+        "{e}       {e}",
+        " {e}     {e} ",
+        "  {e}   {e}  ",
+        "   {e} {e}   ",
+        "    {e}    ",
+    ],
+    "smile": [
+        " {e}{e}{e}{e}{e}{e} ",
+        "{e}      {e}",
+        "{e} {e}  {e} {e}",
+        "{e}      {e}",
+        "{e} {e}  {e} {e}",
+        "{e}  {e}{e}  {e}",
+        " {e}{e}{e}{e}{e}{e} ",
+    ],
+    "wave": [
+        "{e}     {e}     {e}",
+        " {e}   {e} {e}   {e}",
+        "  {e} {e}   {e} {e}",
+        "   {e}     {e}",
+    ],
+}
 
 
 @bot.on_message(filters.command("emoji"))
@@ -66,4 +117,132 @@ async def random_emoji_cmd(_, message: Message):
     await message.reply_text(
         f"**Random Emoji:**\n\n"
         f"{'  '.join(picked)}"
+    )
+
+
+@bot.on_message(filters.command("emojirain"))
+async def emoji_rain_cmd(_, message: Message):
+    """Send a cascade of random emojis — an emoji rain animation.
+
+    Usage: /emojirain [emoji] [count]
+    """
+    args = message.text.split(None, 2)
+    emoji = args[1].strip() if len(args) > 1 else None
+    count = 5
+
+    if len(args) > 2:
+        try:
+            count = min(int(args[2]), 8)
+        except ValueError:
+            count = 5
+
+    if not emoji:
+        pool = random.sample(EMOJI_LIST, min(10, len(EMOJI_LIST)))
+    else:
+        pool = [emoji]
+
+    status = await message.reply_text("🌧️")
+
+    frames = []
+    for i in range(count):
+        line_count = min(i + 2, 6)
+        lines = []
+        for _ in range(line_count):
+            spacing = random.randint(0, 3)
+            emojis = [random.choice(pool) for _ in range(random.randint(3, 7))]
+            lines.append((" " * spacing) + " ".join(emojis))
+        frames.append("\n".join(lines))
+
+    for frame in frames:
+        try:
+            await status.edit_text(frame)
+            await asyncio.sleep(0.8)
+        except Exception:
+            break
+
+    # Final frame
+    final_emojis = " ".join(random.choice(pool) for _ in range(15))
+    try:
+        await status.edit_text(
+            f"🌧️ **Emoji Rain Complete!**\n\n{final_emojis}"
+        )
+    except Exception:
+        pass
+
+
+@bot.on_message(filters.command("emojiart"))
+async def emoji_art_cmd(_, message: Message):
+    """Create emoji art patterns.
+
+    Usage:
+        /emojiart heart 🔥
+        /emojiart star ⭐
+        /emojiart diamond 💎
+        /emojiart smile 😊
+        /emojiart wave 🌊
+    """
+    args = message.text.split(None, 2)
+    if len(args) < 2:
+        shapes = ", ".join(f"`{s}`" for s in _EMOJI_ART.keys())
+        return await message.reply_text(
+            f"**Emoji Art / ইমোজি আর্ট**\n\n"
+            f"Usage: `/emojiart <shape> [emoji]`\n\n"
+            f"Shapes: {shapes}\n"
+            f"Example: `/emojiart heart ❤️`"
+        )
+
+    shape = args[1].strip().lower()
+    emoji = args[2].strip() if len(args) > 2 else "❤️"
+
+    pattern = _EMOJI_ART.get(shape)
+    if not pattern:
+        shapes = ", ".join(f"`{s}`" for s in _EMOJI_ART.keys())
+        return await message.reply_text(
+            f"❌ Unknown shape. Available: {shapes}"
+        )
+
+    art = "\n".join(line.replace("{e}", emoji) for line in pattern)
+    await message.reply_text(art)
+
+
+@bot.on_message(filters.command("emojistory"))
+async def emoji_story_cmd(_, message: Message):
+    """Generate a random story told entirely in emojis."""
+    stories = [
+        "👶 ➡️ 🏫 ➡️ 📚 ➡️ 🎓 ➡️ 💼 ➡️ 💰 ➡️ 🏠 ➡️ 💍 ➡️ 👨‍👩‍👧‍👦 ➡️ 😊",
+        "🌅 ➡️ ☕ ➡️ 💻 ➡️ 😤 ➡️ 🍕 ➡️ 💻 ➡️ ✅ ➡️ 🎮 ➡️ 😴",
+        "🏃 ➡️ 🌧️ ➡️ 🏠 ➡️ ☕ ➡️ 📺 ➡️ 🍿 ➡️ 😊 ➡️ 💤",
+        "💑 ➡️ 🎭 ➡️ 🍽️ ➡️ 🌃 ➡️ 💃 ➡️ 🎵 ➡️ 💋 ➡️ ❤️",
+        "🐱 ➡️ 📦 ➡️ 😺 ➡️ 🧶 ➡️ 😸 ➡️ 🐟 ➡️ 😻 ➡️ 💤",
+        "🧑‍🚀 ➡️ 🚀 ➡️ 🌍 ➡️ ✨ ➡️ 🌙 ➡️ 👽 ➡️ 🤝 ➡️ 🏠",
+        "🎸 ➡️ 🎤 ➡️ 🎵 ➡️ 🎶 ➡️ 👏 ➡️ 🏆 ➡️ 🌟 ➡️ 🎉",
+        "🌱 ➡️ 🌿 ➡️ 🌳 ➡️ 🍎 ➡️ 🍏 ➡️ 🧃 ➡️ 😋",
+    ]
+    story = random.choice(stories)
+    await message.reply_text(
+        f"📖 **Emoji Story:**\n\n{story}"
+    )
+
+
+@bot.on_message(filters.command("emojimood"))
+async def emoji_mood_cmd(_, message: Message):
+    """Show a random mood with matching emojis.
+
+    Usage: /emojimood
+    """
+    moods = [
+        ("Happy / খুশি", "😊 🎉 ✨ 🌟 💃 🎵 🥳 🌈"),
+        ("Sad / দুঃখিত", "😢 💔 🌧️ 😔 🥺 💧 🫂 😞"),
+        ("Angry / রাগ", "😤 🔥 💢 😡 👊 ⚡ 🌋 💥"),
+        ("Love / ভালোবাসা", "❤️ 💕 🥰 😍 💋 🌹 💝 💞"),
+        ("Sleepy / ঘুম", "😴 💤 🌙 🛏️ 🌃 ☕ 🥱 😪"),
+        ("Excited / উত্তেজিত", "🤩 🎊 🚀 ⭐ 🎆 🎇 💫 🔥"),
+        ("Chill / রিল্যাক্স", "😎 🏖️ 🎧 ☀️ 🍹 🌴 🧊 🎶"),
+        ("Hungry / ক্ষুধা", "😋 🍕 🍔 🍟 🍩 🌮 🍣 🤤"),
+        ("Studious / পড়াশোনা", "📚 📝 💡 🎓 🧠 📖 ✏️ 🤓"),
+        ("Creative / সৃজনশীল", "🎨 ✍️ 🎭 🎬 📷 🎸 🖌️ 💡"),
+    ]
+    mood_name, emojis = random.choice(moods)
+    await message.reply_text(
+        f"🎭 **Mood: {mood_name}**\n\n{emojis}"
     )

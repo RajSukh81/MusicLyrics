@@ -83,6 +83,10 @@ HELP_CATEGORIES = {
             "▸ `/dice` — Roll a dice\n"
             "▸ `/wordseek` — Word seek game\n"
             "▸ `/kill` — Kill game\n"
+            "▸ `/rps` — Rock Paper Scissors ✊📄✂️\n"
+            "▸ `/guess` — Number guessing game 🔢\n"
+            "▸ `/emojichain` — Emoji memory chain 🧠\n"
+            "▸ `/typerace` — Typing speed race ⌨️\n"
         ),
     },
     "security": {
@@ -99,6 +103,11 @@ HELP_CATEGORIES = {
             "▸ `/captcha` — Toggle captcha\n"
             "▸ `/blacklist` — Manage blacklist\n"
             "▸ `/setwelcome` — Set welcome message\n"
+            "▸ `/antilink` — Anti-link protection 🔗\n"
+            "▸ `/antiraid` — Anti-raid protection 🛡️\n"
+            "▸ `/slowmode` — Slow mode control 🐢\n"
+            "▸ `/report` — Report to admins 🚨\n"
+            "▸ `/reports` — Toggle report system\n"
         ),
     },
     "tools": {
@@ -118,6 +127,13 @@ HELP_CATEGORIES = {
             "▸ `/afk` — Set AFK status\n"
             "▸ `/react` — React to message\n"
             "▸ `/emoji` — Big emoji\n"
+            "▸ `/emojirain` — Emoji rain animation 🌧️\n"
+            "▸ `/emojiart` — Emoji art patterns 🎨\n"
+            "▸ `/emojistory` — Random emoji story 📖\n"
+            "▸ `/emojimood` — Random mood emojis 🎭\n"
+            "▸ `/autoreact` — Auto-react toggle\n"
+            "▸ `/reactpoll` — Reaction-based poll 📊\n"
+            "▸ `/reactcombo` — Combo reactions 🎆\n"
         ),
     },
     "admin": {

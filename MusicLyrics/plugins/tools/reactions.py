@@ -5,6 +5,7 @@ from pyrogram.types import Message, ReactionTypeEmoji
 from pyrogram.errors import ReactionInvalid, MessageNotModified
 
 import random
+import asyncio
 import logging
 
 from MusicLyrics.bot import bot
@@ -163,3 +164,142 @@ async def reactall_cmd(client, message: Message):
         await message.reply_text(f"Reacted with: {emoji}")
     except Exception as e:
         await message.reply_text(f"Error: `{e}`")
+
+
+# --- Auto-react settings per chat ---
+_autoreact_chats: dict[int, bool] = {}
+_autoreact_rate: dict[int, int] = {}  # chat_id -> percentage (1-100)
+
+
+@bot.on_message(filters.command("autoreact"))
+async def autoreact_cmd(client, message: Message):
+    """Toggle automatic reactions on messages.
+
+    Usage:
+        /autoreact on [rate]  — Enable auto-react (rate = % chance, default 30)
+        /autoreact off        — Disable
+        /autoreact status     — Show status
+    """
+    chat_id = message.chat.id
+    args = message.text.split(None, 2)
+
+    if len(args) < 2:
+        return await message.reply_text(
+            "**Auto-React Usage:**\n\n"
+            "▸ `/autoreact on [rate]` — চালু (rate = 1-100%, default 30%)\n"
+            "▸ `/autoreact off` — বন্ধ\n"
+            "▸ `/autoreact status` — দেখো"
+        )
+
+    sub = args[1].strip().lower()
+
+    if sub == "on":
+        rate = 30
+        if len(args) > 2:
+            try:
+                rate = max(1, min(100, int(args[2])))
+            except ValueError:
+                rate = 30
+        _autoreact_chats[chat_id] = True
+        _autoreact_rate[chat_id] = rate
+        await message.reply_text(
+            f"✅ Auto-react চালু! / Auto-react enabled!\n"
+            f"📊 Rate: {rate}% chance per message"
+        )
+    elif sub == "off":
+        _autoreact_chats[chat_id] = False
+        await message.reply_text("❌ Auto-react বন্ধ। / Auto-react disabled.")
+    elif sub == "status":
+        enabled = _autoreact_chats.get(chat_id, False)
+        rate = _autoreact_rate.get(chat_id, 30)
+        status = "চালু ✅" if enabled else "বন্ধ ❌"
+        await message.reply_text(
+            f"**Auto-React Status:**\n\n"
+            f"▸ Status: {status}\n"
+            f"▸ Rate: {rate}%"
+        )
+    else:
+        await message.reply_text("❌ `/autoreact on|off|status`")
+
+
+@bot.on_message(filters.group & ~filters.service & ~filters.command([""]), group=20)
+async def _autoreact_watcher(client, message: Message):
+    """Auto-react to messages if enabled."""
+    chat_id = message.chat.id
+    if not _autoreact_chats.get(chat_id, False):
+        return
+    if not message.from_user or message.from_user.is_bot:
+        return
+
+    rate = _autoreact_rate.get(chat_id, 30)
+    if random.randint(1, 100) > rate:
+        return
+
+    emoji = random.choice(REACTION_EMOJIS[:20])
+    try:
+        await _send_reaction(client, chat_id, message.id, emoji)
+    except Exception:
+        pass
+
+
+@bot.on_message(filters.command("reactpoll"))
+async def react_poll_cmd(client, message: Message):
+    """Create a reaction-based poll using emojis.
+
+    Usage: /reactpoll <question> | <option1 emoji> | <option2 emoji> ...
+    Example: /reactpoll Best fruit? | 🍎 | 🍊 | 🍇
+    """
+    args = message.text.split(None, 1)
+    if len(args) < 2:
+        return await message.reply_text(
+            "**Reaction Poll Usage:**\n\n"
+            "`/reactpoll Best fruit? | 🍎 Apple | 🍊 Orange | 🍇 Grape`\n\n"
+            "Separate question and options with `|`"
+        )
+
+    parts = [p.strip() for p in args[1].split("|")]
+    if len(parts) < 3:
+        return await message.reply_text(
+            "❌ কমপক্ষে 2 টি অপশন দাও। / Need at least 2 options.\n"
+            "Example: `/reactpoll Question? | 🍎 Option1 | 🍊 Option2`"
+        )
+
+    question = parts[0]
+    options = parts[1:]
+
+    text = f"📊 **Reaction Poll / রিঅ্যাকশন পোল**\n\n"
+    text += f"❓ {question}\n\n"
+    for opt in options:
+        text += f"▸ {opt}\n"
+    text += f"\n🗳️ নিচের ইমোজি দিয়ে ভোট দাও! / React to vote!"
+
+    await message.reply_text(text)
+
+
+@bot.on_message(filters.command("reactcombo"))
+async def react_combo_cmd(client, message: Message):
+    """Send multiple reactions in sequence (animation effect).
+
+    Usage: /reactcombo — Reply to a message
+    """
+    if not message.reply_to_message:
+        return await message.reply_text("Reply to a message to combo react.")
+
+    combo = random.sample(REACTION_EMOJIS[:20], min(5, len(REACTION_EMOJIS)))
+    success_count = 0
+
+    for emoji in combo:
+        try:
+            await _send_reaction(
+                client, message.chat.id,
+                message.reply_to_message.id, emoji,
+            )
+            success_count += 1
+            await asyncio.sleep(0.5)
+        except Exception:
+            break
+
+    await message.reply_text(
+        f"🎆 Combo React! {success_count} reactions sent!\n"
+        f"{'  '.join(combo[:success_count])}"
+    )
