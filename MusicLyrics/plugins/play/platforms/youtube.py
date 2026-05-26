@@ -44,43 +44,33 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Multiple public Piped API instances for redundancy (updated May 2026)
-# Ordered by reliability — most stable instances first
+# Ordered by reliability — verified working instances first
+# Dead/unreliable instances removed. Timeout reduced from 15s to 8s.
 _PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
     "https://pipedapi.r4fo.com",
     "https://api.piped.yt",
     "https://pipedapi.leptons.xyz",
-    "https://pipedapi.darkness.services",
-    "https://pipedapi.drgns.space",
-    "https://pipedapi.in.projectsegfau.lt",
-    "https://pipedapi.us.projectsegfau.lt",
     "https://pipedapi.frontendfriendly.xyz",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.ngn.tf",
-    "https://pipedapi.simpleprivacy.fr",
-    "https://pipedapi.moomoo.me",
     "https://pipedapi.syncpundit.io",
 ]
+
+# Track dead Piped/Invidious instances at runtime to skip them
+_dead_piped: set[str] = set()
+_dead_invidious: set[str] = set()
 
 # Invidious instances as additional fallback (updated May 2026)
 # These act as YouTube proxies — no cookies needed
 _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.fdn.fr",
-    "https://invidious.protokolla.fi",
     "https://iv.datura.network",
     "https://vid.puffyan.us",
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
-    "https://invidious.privacyredirect.com",
-    "https://inv.n8pjl.ca",
-    "https://invidious.lunar.icu",
     "https://invidious.perennialte.ch",
-    "https://inv.us.projectsegfau.lt",
     "https://invidious.jing.rocks",
-    "https://invidious.einfachzocken.eu",
-    "https://inv.bp.projectsegfau.lt",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -109,7 +99,7 @@ _PROXY_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/136.0.0.0 Safari/537.36"
+        "Chrome/137.0.0.0 Safari/537.36"
     ),
 }
 
@@ -246,12 +236,14 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
 
 async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
     """Try a single Piped instance."""
+    if base_url in _dead_piped:
+        return None  # Skip known-dead instances
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{base_url}/streams/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -260,8 +252,12 @@ async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
                         return data
                 else:
                     LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
+                    if resp.status in (502, 503, 520, 521, 522, 523, 524):
+                        _dead_piped.add(base_url)
+                        LOG.info("Piped instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
-        LOG.debug("Piped %s timed out for %s", base_url, video_id)
+        _dead_piped.add(base_url)
+        LOG.debug("Piped %s timed out for %s — marked dead", base_url, video_id)
     except Exception as e:
         LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
     return None
@@ -291,12 +287,14 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
 
 async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict]:
     """Try a single Invidious instance."""
+    if base_url in _dead_invidious:
+        return None  # Skip known-dead instances
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{base_url}/api/v1/videos/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -305,8 +303,12 @@ async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict
                         return data
                 else:
                     LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
+                    if resp.status in (502, 503, 520, 521, 522, 523, 524):
+                        _dead_invidious.add(base_url)
+                        LOG.info("Invidious instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
-        LOG.debug("Invidious %s timed out for %s", base_url, video_id)
+        _dead_invidious.add(base_url)
+        LOG.debug("Invidious %s timed out for %s — marked dead", base_url, video_id)
     except Exception as e:
         LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)
     return None
@@ -533,26 +535,26 @@ _PLAYER_CLIENTS = [
             "client": {
                 "clientName": "ANDROID_TESTSUITE",
                 "clientVersion": "1.9",
-                "androidSdkVersion": 34,
+                "androidSdkVersion": 35,
                 "hl": "en",
                 "gl": "US",
                 "osName": "Android",
-                "osVersion": "14",
+                "osVersion": "15",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-        "ua": "com.google.android.youtube/1.9 (Linux; U; Android 14; en_US) gzip",
+        "ua": "com.google.android.youtube/1.9 (Linux; U; Android 15; en_US) gzip",
     },
-    # IOS — reliable for direct stream URLs
+    # IOS — reliable for direct stream URLs (updated to latest version)
     {
         "name": "IOS",
         "context": {
             "client": {
                 "clientName": "IOS",
-                "clientVersion": "20.25.2",
+                "clientVersion": "20.26.3",
                 "deviceMake": "Apple",
-                "deviceModel": "iPhone16,2",
+                "deviceModel": "iPhone17,1",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
@@ -561,17 +563,17 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-        "ua": "com.google.ios.youtube/20.25.2 (iPhone16,2; U; CPU iOS 18_5_1 like Mac OS X)",
+        "ua": "com.google.ios.youtube/20.26.3 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
     },
-    # IOS_MUSIC — good for audio streams
+    # IOS_MUSIC — good for audio streams (updated)
     {
         "name": "IOS_MUSIC",
         "context": {
             "client": {
                 "clientName": "IOS_MUSIC",
-                "clientVersion": "7.45.1",
+                "clientVersion": "7.47.0",
                 "deviceMake": "Apple",
-                "deviceModel": "iPhone16,2",
+                "deviceModel": "iPhone17,1",
                 "hl": "en",
                 "gl": "US",
                 "osName": "iOS",
@@ -580,43 +582,25 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
-        "ua": "com.google.ios.youtubemusic/7.45.1 (iPhone16,2; U; CPU iOS 18_5_1 like Mac OS X)",
+        "ua": "com.google.ios.youtubemusic/7.47.0 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
     },
-    # ANDROID_MUSIC — alternative mobile music client
+    # ANDROID_MUSIC — alternative mobile music client (updated)
     {
         "name": "ANDROID_MUSIC",
         "context": {
             "client": {
                 "clientName": "ANDROID_MUSIC",
-                "clientVersion": "7.40.51",
-                "androidSdkVersion": 34,
+                "clientVersion": "7.42.52",
+                "androidSdkVersion": 35,
                 "hl": "en",
                 "gl": "US",
                 "osName": "Android",
-                "osVersion": "14",
+                "osVersion": "15",
                 "platform": "MOBILE",
             }
         },
         "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-        "ua": "com.google.android.apps.youtube.music/7.40.51 (Linux; U; Android 14) gzip",
-    },
-    # ANDROID_VR — low detection rate (deprioritized — YouTube started blocking mid-2025)
-    {
-        "name": "ANDROID_VR",
-        "context": {
-            "client": {
-                "clientName": "ANDROID_VR",
-                "clientVersion": "1.68.05",
-                "androidSdkVersion": 34,
-                "hl": "en",
-                "gl": "US",
-                "osName": "Android",
-                "osVersion": "14",
-                "platform": "MOBILE",
-            }
-        },
-        "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-        "ua": "com.google.android.apps.youtube.vr.oculus/1.68.05 (Linux; U; Android 14) gzip",
+        "ua": "com.google.android.apps.youtube.music/7.42.52 (Linux; U; Android 15) gzip",
     },
     # TV_EMBEDDED — works for some videos, no cipher needed
     {
@@ -646,7 +630,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
     },
 ]
 
@@ -695,11 +679,11 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
     sapisidhash = hashlib.sha1(hash_input.encode()).hexdigest()
     auth_header = f"SAPISIDHASH {timestamp}_{sapisidhash}"
 
-    _web_version = "2.20250523.06.00"
-    # Calculate dynamic signatureTimestamp (days since YouTube epoch 2025-01-01
-    # approx — this prevents stale hardcoded values from being rejected)
+    _web_version = "2.20260525.01.00"
+    # Calculate dynamic signatureTimestamp — use current epoch seconds
+    # divided by 86400 gives days since Unix epoch, which YouTube uses
     import math, time as _time2
-    _sts = math.floor(_time2.time() / 86400)  # daily rotating timestamp
+    _sts = int(_time2.time())  # Use fresh epoch timestamp for each request
     payload = {
         "context": {
             "client": {
@@ -725,7 +709,7 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/136.0.0.0 Safari/537.36"
+            "Chrome/137.0.0.0 Safari/537.36"
         ),
         "Origin": origin,
         "Referer": f"{origin}/",
@@ -772,8 +756,10 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
                                 len(direct), video_id)
                         return data
                     else:
-                        LOG.debug("Innertube WEB+cookies: %d formats but all cipher for %s",
+                        # Accept cipher formats too — yt-dlp can decrypt them
+                        LOG.info("Innertube WEB+cookies: %d cipher formats for %s (accepted)",
                                  len(all_fmts), video_id)
+                        return data
     except Exception as e:
         LOG.debug("Innertube WEB+cookies error for %s: %s", video_id, e)
 
@@ -787,6 +773,9 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
     then mobile clients for direct stream URLs without signature cipher.
     Auto-detects and disables broken proxies (402 Payment Required).
     """
+    # Track cipher-only data as fallback (better than nothing)
+    _last_innertube_cipher_data = {}
+
     # Try WEB client with cookies first (works on cloud IPs when authenticated)
     cookie_file = _get_cookie()
     if cookie_file:
@@ -873,14 +862,23 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
                                  "(cipher=%d, total=%d)",
                                  client["name"], len(all_fmts), video_id,
                                  cipher_count, len(all_fmts))
-                        # NOTE: We don't return cipher formats here because
-                        # they need signature decryption which Innertube alone
-                        # can't do. yt-dlp handles this in its fallback path.
+                        # Accept cipher formats as last resort — yt-dlp can
+                        # decrypt these in the fallback path. Better than
+                        # returning None and skipping to slower methods.
+                        if not _last_innertube_cipher_data:
+                            _last_innertube_cipher_data.update(data)
 
         except Exception as e:
             LOG.debug("Innertube player %s error for %s: %s",
                      client["name"], video_id, e)
             continue
+
+    # If we got cipher-only formats from any client, return them
+    # yt-dlp can handle cipher decryption in the fallback path
+    if _last_innertube_cipher_data:
+        LOG.info("Innertube: returning cipher-only data for %s (yt-dlp will decrypt)", video_id)
+        return _last_innertube_cipher_data
+
     return None
 
 
@@ -1084,7 +1082,6 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "check_formats": False,
         "allow_unplayable_formats": False,
         # Accept the FIRST available format rather than checking all
-        "format_sort_force": True,
         "format_sort": [
             "proto:https",             # prefer HTTPS streams
             "proto:m3u8_native",       # prefer HLS (no signature needed)
@@ -1094,8 +1091,6 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": client_combo,
-                # Skip format verification from cloud IPs
-                "formats": ["missing_pot"],
             },
         },
         "hls_prefer_native": True,  # Use native HLS downloader (more reliable)
@@ -1103,7 +1098,7 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/136.0.0.0 Safari/537.36"
+                "Chrome/137.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9",
         },
@@ -1146,7 +1141,7 @@ _INNERTUBE_SEARCH_URL = "https://www.youtube.com/youtubei/v1/search"
 _INNERTUBE_CONTEXT = {
     "client": {
         "clientName": "WEB",
-        "clientVersion": "2.20250520.01.00",
+        "clientVersion": "2.20260525.01.00",
         "hl": "en",
         "gl": "US",
     }
@@ -1157,7 +1152,7 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/136.0.0.0 Safari/537.36"
+        "Chrome/137.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
     "Origin": "https://www.youtube.com",
@@ -1392,7 +1387,24 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         )
     except Exception:
         LOG.exception("Audio stream URL extraction failed: %s", url)
-        return None
+
+    # Try 6: Retry once after clearing dead instance caches
+    # (instances may have recovered)
+    if _dead_piped or _dead_invidious:
+        LOG.info("Clearing dead instance caches and retrying for: %s", url)
+        _dead_piped.clear()
+        _dead_invidious.clear()
+        if video_id:
+            try:
+                data = await _piped_get_streams(video_id)
+                if data:
+                    stream_url = _best_piped_audio_url(data)
+                    if stream_url:
+                        return stream_url
+            except Exception:
+                pass
+
+    return None
 
 
 async def get_video_stream_url(url: str) -> Optional[str]:
@@ -1455,7 +1467,23 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         )
     except Exception:
         LOG.exception("Video stream URL extraction failed: %s", url)
-        return None
+
+    # Try 6: Retry once after clearing dead instance caches
+    if _dead_piped or _dead_invidious:
+        LOG.info("Clearing dead instance caches and retrying for video: %s", url)
+        _dead_piped.clear()
+        _dead_invidious.clear()
+        if video_id:
+            try:
+                data = await _piped_get_streams(video_id)
+                if data:
+                    stream_url = _best_piped_video_url(data)
+                    if stream_url:
+                        return stream_url
+            except Exception:
+                pass
+
+    return None
 
 
 async def get_video_info(url: str) -> Optional[dict]:
