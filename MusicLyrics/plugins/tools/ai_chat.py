@@ -395,10 +395,14 @@ async def _try_gemini(
         user_text = f"[{user_name}]: {text}"
     contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-    # Some models (e.g. gemini-2.0-flash-lite) do NOT support the
-    # "system_instruction" field and return 400 "Unknown name" error.
+    # The "system_instruction" field is ONLY supported on the v1beta API.
+    # The v1 API and certain models (gemini-2.0-flash-lite) do NOT support it
+    # and return 400 "Unknown name system_instruction: Cannot find field."
     # For those, prepend the system prompt as the first user message instead.
-    supports_system_instruction = model not in _NO_SYSTEM_INSTRUCTION_MODELS
+    supports_system_instruction = (
+        api_ver == "v1beta"
+        and model not in _NO_SYSTEM_INSTRUCTION_MODELS
+    )
 
     if supports_system_instruction:
         payload = {
