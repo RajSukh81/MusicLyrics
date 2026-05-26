@@ -54,6 +54,9 @@ _PIPED_INSTANCES = [
     "https://pipedapi.leptons.xyz",
     "https://pipedapi.frontendfriendly.xyz",
     "https://pipedapi.syncpundit.io",
+    "https://pipedapi.drgns.space",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://pipedapi.us.projectsegfau.lt",
 ]
 
 # Track dead Piped/Invidious instances at runtime to skip them
@@ -71,6 +74,8 @@ _INVIDIOUS_INSTANCES = [
     "https://inv.tux.pizza",
     "https://invidious.perennialte.ch",
     "https://invidious.jing.rocks",
+    "https://invidious.privacyredirect.com",
+    "https://yt.artemislena.eu",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -109,7 +114,7 @@ _proxy_dead = False
 _proxy_fail_count = 0
 _proxy_dead_since: float = 0.0  # timestamp when proxy was disabled
 _PROXY_FAIL_THRESHOLD = 1  # Disable after 1 failure (fast fail — don't waste time)
-_PROXY_RECOVERY_SECONDS = 600  # Re-try proxy every 10 minutes
+_PROXY_RECOVERY_SECONDS = 180  # Re-try proxy every 3 minutes
 
 
 def _mark_proxy_failed():
@@ -221,8 +226,8 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
     instances = list(_PIPED_INSTANCES)
     random.shuffle(instances)
 
-    # Try instances in batches of 3 concurrently for speed
-    batch_size = 3
+    # Try instances in batches of 4 concurrently for speed
+    batch_size = 4
     for i in range(0, len(instances), batch_size):
         batch = instances[i:i + batch_size]
         tasks = [_try_piped_instance(base_url, video_id) for base_url in batch]
@@ -272,8 +277,8 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
     instances = list(_INVIDIOUS_INSTANCES)
     random.shuffle(instances)
 
-    # Try instances in batches of 3 concurrently
-    batch_size = 3
+    # Try instances in batches of 4 concurrently
+    batch_size = 4
     for i in range(0, len(instances), batch_size):
         batch = instances[i:i + batch_size]
         tasks = [_try_invidious_instance(base_url, video_id) for base_url in batch]
@@ -680,10 +685,11 @@ async def _innertube_web_with_cookies(video_id: str, cookie_file: str) -> Option
     auth_header = f"SAPISIDHASH {timestamp}_{sapisidhash}"
 
     _web_version = "2.20260525.01.00"
-    # Calculate dynamic signatureTimestamp — use current epoch seconds
-    # divided by 86400 gives days since Unix epoch, which YouTube uses
-    import math, time as _time2
-    _sts = int(_time2.time())  # Use fresh epoch timestamp for each request
+    # signatureTimestamp is typically derived from YouTube's player JS.
+    # A reasonable approximation: days since 2020-01-01 (YouTube epoch).
+    # Real value is in player JS as `signatureTimestamp:NNNNN`.
+    import time as _time2
+    _sts = (int(_time2.time()) - 1577836800) // 86400  # Days since 2020-01-01
     payload = {
         "context": {
             "client": {
@@ -780,10 +786,11 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
     Auto-detects and disables broken proxies (402 Payment Required).
     Skips entirely if proxy is dead (Innertube needs proxy on cloud).
     """
-    # If proxy is dead and we're on cloud, Innertube won't work — skip quickly
-    if _proxy_dead and not _get_proxy():
-        LOG.debug("Innertube skipped: proxy is dead, Innertube needs proxy on cloud")
-        return None
+    # If proxy is dead, try Innertube WITHOUT proxy — cloud IPs may work
+    # for some clients (especially mobile clients and TV_EMBEDDED).
+    # Previously we skipped Innertube entirely when proxy was dead, but
+    # some clients work without proxy even from cloud IPs.
+    _skip_proxy_for_innertube = _proxy_dead
 
     # Track cipher-only data as fallback (better than nothing)
     _last_innertube_cipher_data = {}
@@ -825,12 +832,13 @@ async def _innertube_player(video_id: str) -> Optional[dict]:
             api_url = f"{_INNERTUBE_PLAYER_URL}?key={client['key']}"
 
             async with aiohttp.ClientSession() as session:
+                req_kwargs = {} if _skip_proxy_for_innertube else _aio_request_kwargs()
                 async with session.post(
                     api_url,
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=8),
-                    **_aio_request_kwargs(),
+                    **req_kwargs,
                 ) as resp:
                     if resp.status != 200:
                         if resp.status in (402, 407):
@@ -2166,43 +2174,49 @@ async def _download_stream(stream_url: str, filepath: str,
 
     use_proxy=True for Innertube/YouTube CDN URLs (need proxy on cloud).
     use_proxy=False for Piped/Invidious/Cobalt URLs (already proxied).
+    Automatically retries without proxy if proxied download fails.
     """
-    try:
-        req_kwargs = {}
-        if use_proxy:
-            proxy = _get_proxy()
-            if proxy:
-                req_kwargs["proxy"] = proxy
-                LOG.debug("Downloading stream via proxy: %s", proxy[:30])
+    for attempt_proxy in ([True, False] if use_proxy else [False]):
+        try:
+            req_kwargs = {}
+            if attempt_proxy:
+                proxy = _get_proxy()
+                if proxy:
+                    req_kwargs["proxy"] = proxy
+                    LOG.debug("Downloading stream via proxy: %s", proxy[:30])
+                elif attempt_proxy:
+                    continue  # No proxy available, skip to no-proxy attempt
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                stream_url,
-                headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=120, connect=10),
-                **req_kwargs,
-            ) as resp:
-                if resp.status != 200:
-                    LOG.debug("Stream download HTTP %d for: %s", resp.status, stream_url[:80])
-                    return None
-                import aiofiles
-                total_bytes = 0
-                async with aiofiles.open(filepath, "wb") as fp:
-                    async for chunk in resp.content.iter_chunked(64 * 1024):
-                        await fp.write(chunk)
-                        total_bytes += len(chunk)
-        if os.path.exists(filepath) and total_bytes > 1000:
-            LOG.info("Downloaded %d bytes to %s", total_bytes, filepath)
-            return filepath
-        LOG.warning("Downloaded file is empty or too small (%d bytes): %s",
-                   total_bytes, stream_url[:80])
-        # Clean up empty file
-        if os.path.exists(filepath):
-            os.remove(filepath)
-        return None
-    except Exception:
-        LOG.debug("Direct stream download failed: %s", stream_url[:80])
-        return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    stream_url,
+                    headers=_PROXY_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=120, connect=10),
+                    **req_kwargs,
+                ) as resp:
+                    if resp.status != 200:
+                        LOG.debug("Stream download HTTP %d (proxy=%s) for: %s",
+                                  resp.status, attempt_proxy, stream_url[:80])
+                        continue
+                    import aiofiles
+                    total_bytes = 0
+                    async with aiofiles.open(filepath, "wb") as fp:
+                        async for chunk in resp.content.iter_chunked(64 * 1024):
+                            await fp.write(chunk)
+                            total_bytes += len(chunk)
+            if os.path.exists(filepath) and total_bytes > 1000:
+                LOG.info("Downloaded %d bytes to %s (proxy=%s)",
+                         total_bytes, filepath, attempt_proxy)
+                return filepath
+            LOG.warning("Downloaded file too small (%d bytes, proxy=%s): %s",
+                       total_bytes, attempt_proxy, stream_url[:80])
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception:
+            LOG.debug("Stream download failed (proxy=%s): %s",
+                     attempt_proxy, stream_url[:80])
+            continue
+    return None
 
 
 def _get_info_sync(url: str) -> Optional[dict]:

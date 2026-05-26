@@ -97,12 +97,11 @@ def _get_history(chat_id: int) -> deque:
 # gemini-1.5-pro, gemini-pro, gemini-2.0-flash-exp
 #
 # Strategy: Use multiple VALID models so when one hits 429 rate limit,
-# the next one picks up. All 2.0 models have separate quotas.
+# the next one picks up. All 2.0+ models have separate quotas.
 _GEMINI_MODELS = [
     "gemini-2.5-flash",            # Latest 2.5 flash — best quality + speed
     "gemini-2.0-flash",            # Stable 2.0 flash — good fallback
-    "gemini-2.0-flash-lite",       # Lite model — NO system_instruction support
-    "gemini-1.5-flash",            # Legacy fallback (may 404)
+    "gemini-2.0-flash-lite",       # Lite model — NO systemInstruction support
 ]
 
 # Models that do NOT support the system_instruction field.
@@ -225,10 +224,10 @@ _OFFLINE_KEYWORD_RESPONSES = {
         "keywords": ["কে তুমি", "who are you", "তোমার নাম", "your name", "কি পারো", "what can you"],
         "bn": [
             "আমি MusicLyrics Bot! আমি গান বাজাতে পারি, গেম খেলতে পারি, চ্যাট করতে পারি! /help দাও!",
-            "আমার নাম MusicLyrics Bot। আমি RajSukh এর তৈরি। গান, গেম, AI চ্যাট সব পারি!",
+            "আমার নাম MusicLyrics Bot। আমি @Raj_81 এর তৈরি। গান, গেম, AI চ্যাট সব পারি!",
         ],
         "en": [
-            "I'm MusicLyrics Bot, created by RajSukh! I can play music, games, and chat with AI!",
+            "I'm MusicLyrics Bot, created by @Raj_81! I can play music, games, and chat with AI!",
             "I'm a multi-feature Telegram bot — music streaming, games, security tools, and more!",
         ],
     },
@@ -294,10 +293,26 @@ def _get_offline_response(text: str) -> str:
     return random.choice(_OFFLINE_BANGLA_REPLIES)
 
 
+# ── Clean AI reply — remove filler text ─────────────────────────────────────
+
+_FILLER_PATTERNS = [
+    r"\n+(?:Let me know|Hope this helps|Feel free|Don't hesitate|If you (?:need|have|want)).*$",
+    r"\n+(?:আর কিছু জানতে চাইলে|আরো কিছু|কিছু জানতে চাইলে|আমাকে জানাও|আমি সবসময়|তোমার জন্য).*$",
+    r"\n+---+\n.*$",
+]
+
+
+def _clean_ai_reply(text: str) -> str:
+    """Remove generic filler text that Gemini sometimes appends."""
+    for pat in _FILLER_PATTERNS:
+        text = re.sub(pat, "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
 # ── System prompt ─────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = (
     "You are MusicLyrics Bot — a smart, friendly, witty, and extremely helpful "
-    "Telegram bot created by RajSukh.\n\n"
+    "Telegram bot created by @Raj_81 (Owner).\n\n"
     "CRITICAL RULES — FOLLOW STRICTLY:\n"
     "1. You MUST answer ALL questions properly, accurately, and completely. "
     "Whether it's about Python, math, history, science, geography, current "
@@ -308,7 +323,8 @@ _SYSTEM_PROMPT = (
     "   - If the user writes in English, reply in English.\n"
     "   - If mixed, reply in mixed.\n"
     "   - NEVER reply in English when the user writes in Bengali.\n"
-    "3. Keep replies concise (1-5 sentences) but COMPLETE and CORRECT.\n"
+    "3. Keep replies concise (1-3 sentences). Do NOT add disclaimers, "
+    "notes, or extra explanations after your answer. Just answer directly.\n"
     "4. Be warm, friendly, witty, and engaging — like a smart best friend.\n"
     "5. Use emojis naturally but sparingly (1-3 per message max).\n"
     "6. If asked about your features or commands, mention:\n"
@@ -320,7 +336,7 @@ _SYSTEM_PROMPT = (
     "   - /queue, /np, /loop, /shuffle — Queue management\n"
     "   - /quiz, /truth, /dare, /ttt, /flip, /dice — Games\n"
     "   - /tr, /tts, /sticker, /info — Tools\n"
-    "7. You are created by RajSukh (Owner). Be proud of it!\n"
+    "7. You are created by @Raj_81 (Owner). Be proud of it!\n"
     "8. NEVER refuse to answer a question. Always try your best.\n"
     "9. For questions you genuinely don't know, say so honestly but suggest "
     "where to find the answer.\n"
@@ -330,6 +346,9 @@ _SYSTEM_PROMPT = (
     "12. You can handle adult topics maturely without being inappropriate.\n"
     "13. Be helpful with coding questions — provide actual code examples.\n"
     "14. For math questions, show step-by-step solutions when appropriate.\n"
+    "15. NEVER add extra lines like 'Let me know if you need anything else' "
+    "or 'Hope this helps!' at the end. Just give the answer and stop.\n"
+    "16. Do NOT repeat the question back to the user. Just answer directly.\n"
 )
 
 
@@ -406,7 +425,7 @@ async def _try_gemini(
 
     if supports_system_instruction:
         payload = {
-            "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
+            "systemInstruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
             "contents": contents,
             "generationConfig": {
                 "maxOutputTokens": 500,
@@ -468,6 +487,8 @@ async def _try_gemini(
                         if parts:
                             reply = parts[0].get("text", "").strip()
                             if reply:
+                                # Clean up extra filler text that AI sometimes adds
+                                reply = _clean_ai_reply(reply)
                                 # Save to history
                                 history.append(("user", text))
                                 history.append(("model", reply))
