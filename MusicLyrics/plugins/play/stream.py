@@ -266,6 +266,7 @@ async def stream_audio(
             raise FileNotFoundError(f"Stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
 
     try:
+        audio = _make_audio_stream(media_path)
         await _do_play(chat_id, audio)
         _active_chats.add(chat_id)
         LOG.info("Streaming audio in %s: %s (%s)",
@@ -373,6 +374,7 @@ async def stream_video(
             raise FileNotFoundError(f"Video stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
 
     try:
+        stream = _make_video_stream(media_path)
         await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
         LOG.info("Streaming video in %s: %s (%s)",
