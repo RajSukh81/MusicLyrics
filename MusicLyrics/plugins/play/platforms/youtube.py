@@ -1156,6 +1156,8 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         # from cloud servers, causing "Requested format is not available".
         "check_formats": False,
         "allow_unplayable_formats": False,
+        # Ignore format errors — try to download even if format check fails
+        "ignore_no_formats_error": True,
         # Accept the FIRST available format rather than checking all
         "format_sort": [
             "proto:https",             # prefer HTTPS streams

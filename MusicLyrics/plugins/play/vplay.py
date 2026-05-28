@@ -43,6 +43,8 @@ from MusicLyrics.plugins.play.platforms.spotify import (
 from MusicLyrics.plugins.play.platforms.jiosaavn import (
     is_jiosaavn_url,
     get_jiosaavn_song,
+    search_and_download_jiosaavn,
+    search_jiosaavn,
 )
 from MusicLyrics.plugins.play.platforms.apple_music import (
     is_apple_music_url,
@@ -302,39 +304,51 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("URL থেকে video পাওয়া যায়নি।")
         return info, media_path, is_stream
 
-    # Plain text query
+    # Plain text query — Priority: JioSaavn → YouTube → SoundCloud
+    # 1. JioSaavn (direct CDN, works reliably for Indian music)
+    LOG.info("Video query: trying JioSaavn first for: %s", query)
+    try:
+        js_path, js_info = await search_and_download_jiosaavn(query)
+        if js_path and js_info:
+            import os as _os
+            if _os.path.isfile(js_path):
+                LOG.info("JioSaavn found for video query (audio only): %s", js_info.get("title"))
+                info = {
+                    "title": js_info.get("title", "Unknown"),
+                    "url": js_info.get("url", ""),
+                    "duration": js_info.get("duration", 0),
+                    "thumbnail": js_info.get("thumbnail", ""),
+                    "channel": js_info.get("artist", ""),
+                    "platform": "jiosaavn",
+                }
+                return info, js_path, False
+    except Exception:
+        LOG.debug("JioSaavn search failed for video query: %s", query)
+
+    # 2. YouTube search + video stream/download
     yt = await search_youtube(query)
-    if not yt:
-        LOG.info("Video search failed, trying combined search+download for: %s", query)
-        filepath, dl_info = await search_and_download_video(query)
-        if filepath and dl_info:
-            return dl_info, filepath, False
-        # LAST RESORT: SoundCloud
-        LOG.info("All YouTube video methods failed, trying SoundCloud for: %s", query)
-        sc_path, sc_info = await search_and_download_soundcloud(query)
-        if sc_path and sc_info:
-            is_stream = bool(sc_info.get("_is_stream_url"))
-            return sc_info, sc_path, is_stream
-        raise ValueError("কোনো result পাওয়া যায়নি।")
-    if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
-        raise ValueError(
-            f"ভিডিওটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি।"
-        )
-    media_path, is_stream = await _get_video_media(yt["url"])
-    if not media_path:
-        LOG.info("All video extraction failed, trying combined search+download for: %s", query)
-        filepath, dl_info = await search_and_download_video(query)
-        if filepath:
-            info = dl_info or yt
-            return info, filepath, False
-        # LAST RESORT: SoundCloud
-        LOG.info("All YouTube video methods failed, trying SoundCloud for: %s", query)
-        sc_path, sc_info = await search_and_download_soundcloud(query)
-        if sc_path and sc_info:
-            is_stream = bool(sc_info.get("_is_stream_url"))
-            return sc_info, sc_path, is_stream
-        raise ValueError("Video stream পাওয়া যায়নি।")
-    return yt, media_path, is_stream
+    if yt:
+        if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
+            raise ValueError(
+                f"ভিডিওটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি।"
+            )
+        media_path, is_stream = await _get_video_media(yt["url"])
+        if media_path:
+            return yt, media_path, is_stream
+
+    # 3. YouTube yt-dlp combined search+download
+    LOG.info("Video search failed, trying combined search+download for: %s", query)
+    filepath, dl_info = await search_and_download_video(query)
+    if filepath and dl_info:
+        return dl_info, filepath, False
+
+    # 4. SoundCloud LAST RESORT
+    LOG.info("All YouTube video methods failed, trying SoundCloud for: %s", query)
+    sc_path, sc_info = await search_and_download_soundcloud(query)
+    if sc_path and sc_info:
+        is_stream = bool(sc_info.get("_is_stream_url"))
+        return sc_info, sc_path, is_stream
+    raise ValueError("কোনো result পাওয়া যায়নি।")
 
 
 @bot.on_message(filters.command(["vplay", "vp"]) & not_edited)

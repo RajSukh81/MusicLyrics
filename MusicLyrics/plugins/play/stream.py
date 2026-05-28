@@ -23,11 +23,14 @@ from MusicLyrics.plugins.play.queue import (
 from MusicLyrics.utils.downloader import cleanup
 from MusicLyrics.utils.autodelete import auto_delete_service, auto_delete_playing
 
-# SoundCloud fallback — ultimate last resort when all other methods fail
+# SoundCloud & JioSaavn fallbacks — ultimate last resort when all other methods fail
 from MusicLyrics.plugins.play.platforms.soundcloud import (
     search_and_download_soundcloud,
     get_soundcloud_stream_url,
     is_soundcloud_url,
+)
+from MusicLyrics.plugins.play.platforms.jiosaavn import (
+    search_and_download_jiosaavn,
 )
 
 LOG = logging.getLogger(__name__)
@@ -252,6 +255,18 @@ async def stream_audio(
                     return
             except Exception:
                 LOG.debug("URL pre-check recovery download failed for %s", chat_id)
+            # Try JioSaavn
+            if title:
+                try:
+                    js_path, js_info = await search_and_download_jiosaavn(title)
+                    if js_path and os.path.isfile(str(js_path)):
+                        audio = _make_audio_stream(js_path)
+                        await _do_play(chat_id, audio)
+                        _active_chats.add(chat_id)
+                        LOG.info("Streaming audio (JioSaavn pre-check recovery) in %s: %s", chat_id, title)
+                        return
+                except Exception:
+                    pass
             # Try SoundCloud
             if title:
                 try:
@@ -297,6 +312,20 @@ async def stream_audio(
             except Exception as dl_exc:
                 LOG.exception("Download fallback also failed in %s: %s",
                              chat_id, dl_exc)
+
+            # Try JioSaavn before SoundCloud
+            if title:
+                try:
+                    LOG.info("YouTube download failed, trying JioSaavn for: %s", title)
+                    js_path, js_info = await search_and_download_jiosaavn(title)
+                    if js_path and os.path.isfile(str(js_path)):
+                        audio = _make_audio_stream(js_path)
+                        await _do_play(chat_id, audio)
+                        _active_chats.add(chat_id)
+                        LOG.info("Streaming audio (JioSaavn fallback) in %s: %s", chat_id, title)
+                        return
+                except Exception:
+                    LOG.debug("JioSaavn fallback failed in %s", chat_id)
 
             # LAST RESORT: SoundCloud fallback when all YouTube methods fail
             if title:
@@ -509,14 +538,27 @@ def is_active(chat_id: int) -> bool:
 
 async def _on_stream_end(client, update):
     """When current track ends, play next in queue or leave."""
-    chat_id = getattr(update, "chat_id", None)
+    chat_id = None
+
+    # Try various ways to get chat_id from the update object
+    if hasattr(update, "chat_id"):
+        chat_id = update.chat_id
+    elif hasattr(update, "chat"):
+        chat_obj = update.chat
+        if isinstance(chat_obj, dict):
+            chat_id = chat_obj.get("id")
+        elif isinstance(chat_obj, int):
+            chat_id = chat_obj
+        elif hasattr(chat_obj, "id"):
+            chat_id = chat_obj.id
+    elif isinstance(update, int):
+        chat_id = update
+    elif isinstance(update, dict):
+        chat_id = update.get("chat_id") or update.get("chat", {}).get("id")
+
     if chat_id is None:
-        chat_id = getattr(update, "chat", {})
-        if isinstance(chat_id, dict):
-            chat_id = chat_id.get("id")
-        if chat_id is None:
-            LOG.warning("Stream end event with unknown chat_id: %s", update)
-            return
+        LOG.warning("Stream end event with unknown chat_id: %s (type: %s)", update, type(update).__name__)
+        return
 
     # Clean up the finished track's file (if it was a local download)
     finished = await get_current(chat_id)
@@ -596,7 +638,9 @@ if pytgcalls is not None:
         try:
             from pytgcalls import filters as _ptg_filters
             if hasattr(_ptg_filters, "stream_end"):
-                pytgcalls.on_update(_ptg_filters.stream_end)(_on_stream_end)
+                @pytgcalls.on_update(_ptg_filters.stream_end)
+                async def _stream_end_handler(client, update):
+                    await _on_stream_end(client, update)
                 _registered = True
                 LOG.info("Stream-end callback registered via pytgcalls.filters.stream_end")
         except (ImportError, AttributeError, TypeError) as e:
@@ -606,7 +650,9 @@ if pytgcalls is not None:
     if not _registered:
         try:
             if hasattr(pytgcalls, "on_stream_end"):
-                pytgcalls.on_stream_end()(_on_stream_end)
+                @pytgcalls.on_stream_end()
+                async def _stream_end_handler2(client, update):
+                    await _on_stream_end(client, update)
                 _registered = True
                 LOG.info("Stream-end callback registered via pytgcalls.on_stream_end()")
         except (AttributeError, TypeError) as e:
@@ -616,11 +662,27 @@ if pytgcalls is not None:
     if not _registered:
         try:
             if hasattr(pytgcalls, "on_closed_voice_chat"):
-                pytgcalls.on_closed_voice_chat()(_on_stream_end)
+                @pytgcalls.on_closed_voice_chat()
+                async def _stream_end_handler3(client, update):
+                    await _on_stream_end(client, update)
                 _registered = True
                 LOG.info("Stream-end callback registered via pytgcalls.on_closed_voice_chat()")
         except (AttributeError, TypeError) as e:
             LOG.debug("Method 3 (on_closed_voice_chat) failed: %s", e)
+
+    # Method 4: py-tgcalls >= 2.1 raw on_update without filter
+    if not _registered:
+        try:
+            @pytgcalls.on_update()
+            async def _raw_update_handler(client, update):
+                # Only handle stream-end type events
+                update_type = type(update).__name__.lower()
+                if "end" in update_type or "stream" in update_type:
+                    await _on_stream_end(client, update)
+            _registered = True
+            LOG.info("Stream-end callback registered via raw pytgcalls.on_update()")
+        except (AttributeError, TypeError) as e:
+            LOG.debug("Method 4 (raw on_update) failed: %s", e)
 
     if not _registered:
         LOG.warning("Could not register stream-end callback -- auto-skip will not work.")
