@@ -48,22 +48,26 @@ os.makedirs(_DOWNLOADS, exist_ok=True)
 # Dead/unreliable instances removed. Timeout reduced from 15s to 8s.
 _PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
     "https://pipedapi.r4fo.com",
+    "https://pipedapi.adminforge.de",
     "https://api.piped.yt",
     "https://pipedapi.leptons.xyz",
-    "https://pipedapi.frontendfriendly.xyz",
-    "https://pipedapi.syncpundit.io",
     "https://pipedapi.drgns.space",
     "https://pipedapi.in.projectsegfau.lt",
     "https://pipedapi.us.projectsegfau.lt",
+    "https://pipedapi.frontendfriendly.xyz",
+    "https://pipedapi.syncpundit.io",
+    "https://piped-api.lunar.icu",
+    "https://pipedapi.moomoo.me",
+    "https://pipedapi.darkness.services",
+    "https://api.piped.private.coffee",
 ]
 
 # Track dead Piped/Invidious instances at runtime to skip them
 # Each entry is (instance_url, timestamp_when_marked_dead)
 _dead_piped: dict[str, float] = {}
 _dead_invidious: dict[str, float] = {}
-_DEAD_INSTANCE_RECOVERY_SECONDS = 600  # Re-try dead instances after 10 minutes
+_DEAD_INSTANCE_RECOVERY_SECONDS = 300  # Re-try dead instances after 5 minutes
 
 # Invidious instances as additional fallback (updated May 2026)
 # These act as YouTube proxies — no cookies needed
@@ -78,6 +82,10 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.jing.rocks",
     "https://invidious.privacyredirect.com",
     "https://yt.artemislena.eu",
+    "https://invidious.lunar.icu",
+    "https://invidious.darkness.services",
+    "https://inv.in.projectsegfau.lt",
+    "https://invidious.private.coffee",
 ]
 
 # Cobalt API — reliable cloud-friendly YouTube proxy
@@ -86,6 +94,8 @@ _COBALT_INSTANCES = [
     "https://api.cobalt.tools",
     "https://cobalt-api.kwiatekmiki.com",
     "https://cobalt.canine.tools",
+    "https://cobalt-api.ayo.tf",
+    "https://co.eepy.today",
 ]
 # Allow custom Cobalt instance via env var (e.g., self-hosted)
 _cobalt_custom_url = os.environ.get("COBALT_API_URL", "").strip().rstrip("/")
@@ -98,9 +108,11 @@ if _COBALT_API_KEY and len(_COBALT_API_KEY) < 20:
     LOG.warning(
         "COBALT_API_KEY looks invalid (too short: %d chars). "
         "Real Cobalt API keys are typically 32+ character hex strings. "
-        "Get a valid key from https://cobalt.tools — current value may cause 401 errors.",
+        "Get a valid key from https://cobalt.tools — will try without key first.",
         len(_COBALT_API_KEY),
     )
+    # Don't use an invalid key — it causes 401 errors everywhere
+    _COBALT_API_KEY = ""
 
 _PROXY_HEADERS = {
     "User-Agent": (
@@ -256,7 +268,7 @@ async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
             async with session.get(
                 f"{base_url}/streams/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=6),
+                timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -265,7 +277,7 @@ async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
                         return data
                 else:
                     LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
-                    if resp.status in (502, 503, 520, 521, 522, 523, 524):
+                    if resp.status in (500, 502, 503, 520, 521, 522, 523, 524):
                         _dead_piped[base_url] = _t.time()
                         LOG.info("Piped instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
@@ -313,7 +325,7 @@ async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict
             async with session.get(
                 f"{base_url}/api/v1/videos/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=6),
+                timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -322,7 +334,7 @@ async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict
                         return data
                 else:
                     LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
-                    if resp.status in (502, 503, 520, 521, 522, 523, 524):
+                    if resp.status in (500, 502, 503, 520, 521, 522, 523, 524):
                         _dead_invidious[base_url] = _t.time()
                         LOG.info("Invidious instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
@@ -398,11 +410,10 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
 
     for instance in _COBALT_INSTANCES:
         for endpoint in _endpoints:
-            # Try with API key, then without
-            auth_options = []
+            # Try without auth first (many instances are open), then with API key
+            auth_options = [None]  # Always try without auth first
             if _COBALT_API_KEY:
-                auth_options.append(_COBALT_API_KEY)
-            auth_options.append(None)  # Also try without auth (some instances are open)
+                auth_options.append(_COBALT_API_KEY)  # Then try with key
 
             for api_key in auth_options:
                 try:
@@ -438,7 +449,7 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                             f"{instance}{endpoint}",
                             json=payload,
                             headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=10),
+                            timeout=aiohttp.ClientTimeout(total=12),
                         ) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
@@ -565,13 +576,31 @@ _PLAYER_CLIENTS = [
         "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
         "ua": "com.google.android.youtube/1.9 (Linux; U; Android 15; en_US) gzip",
     },
+    # ANDROID_VR — less monitored, good for cloud IPs
+    {
+        "name": "ANDROID_VR",
+        "context": {
+            "client": {
+                "clientName": "ANDROID_VR",
+                "clientVersion": "1.62.28",
+                "androidSdkVersion": 35,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "15",
+                "platform": "MOBILE",
+            }
+        },
+        "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "ua": "com.google.android.apps.youtube.vr.oculus/1.62.28 (Linux; U; Android 15) gzip",
+    },
     # IOS — reliable for direct stream URLs (updated to latest version)
     {
         "name": "IOS",
         "context": {
             "client": {
                 "clientName": "IOS",
-                "clientVersion": "20.26.3",
+                "clientVersion": "20.26.6",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone17,1",
                 "hl": "en",
@@ -582,7 +611,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-        "ua": "com.google.ios.youtube/20.26.3 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
+        "ua": "com.google.ios.youtube/20.26.6 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
     },
     # IOS_MUSIC — good for audio streams (updated)
     {
@@ -590,7 +619,7 @@ _PLAYER_CLIENTS = [
         "context": {
             "client": {
                 "clientName": "IOS_MUSIC",
-                "clientVersion": "7.47.0",
+                "clientVersion": "7.48.0",
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone17,1",
                 "hl": "en",
@@ -601,7 +630,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s",
-        "ua": "com.google.ios.youtubemusic/7.47.0 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
+        "ua": "com.google.ios.youtubemusic/7.48.0 (iPhone17,1; U; CPU iOS 18_5_1 like Mac OS X)",
     },
     # ANDROID_MUSIC — alternative mobile music client (updated)
     {
@@ -609,7 +638,7 @@ _PLAYER_CLIENTS = [
         "context": {
             "client": {
                 "clientName": "ANDROID_MUSIC",
-                "clientVersion": "7.42.52",
+                "clientVersion": "7.43.50",
                 "androidSdkVersion": 35,
                 "hl": "en",
                 "gl": "US",
@@ -619,7 +648,7 @@ _PLAYER_CLIENTS = [
             }
         },
         "key": "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-        "ua": "com.google.android.apps.youtube.music/7.42.52 (Linux; U; Android 15) gzip",
+        "ua": "com.google.android.apps.youtube.music/7.43.50 (Linux; U; Android 15) gzip",
     },
     # TV_EMBEDDED — works for some videos, no cipher needed
     {
@@ -1078,6 +1107,7 @@ _CLIENT_COMBOS_WITH_COOKIES: list[list[str]] = [
     ["web_creator"],                   # Creator Studio client — good for restricted
     ["ios"],                           # iOS client
     ["ios_music"],                     # iOS Music fallback
+    ["android_vr"],                    # Android VR — less monitored by YouTube
     ["web_safari"],                    # Safari — cookies help
     ["mediaconnect"],                  # MediaConnect — newer, less blocked
     ["tv"],                            # Smart TV — fewer restrictions
@@ -1087,6 +1117,7 @@ _CLIENT_COMBOS_NO_COOKIES: list[list[str]] = [
     ["ios"],                           # iOS — best without cookies
     ["ios_music"],                     # iOS Music — rarely blocked
     ["android_vr"],                    # Android VR — less monitored
+    ["android_testsuite"],             # Android Testsuite — direct URLs
     ["mediaconnect"],                  # MediaConnect — newer client
     ["tv"],                            # Smart TV — fewer restrictions
     ["web_music"],                     # YouTube Music web client
@@ -1113,9 +1144,9 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        "socket_timeout": 10,
-        "retries": 2,
-        "fragment_retries": 2,
+        "socket_timeout": 15,
+        "retries": 3,
+        "fragment_retries": 3,
         "noplaylist": True,
         "no_color": True,
         "noprogress": True,
@@ -1660,7 +1691,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     if _proxy_dead:
         LOG.info("Proxy is dead — skipping proxy attempts, going direct for: %s", url)
         combos = _get_client_combos()
-        for combo in combos[:3]:  # Try first 3 combos only (speed)
+        for combo in combos[:5]:  # Try first 5 combos (speed)
             opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
             opts.pop("proxy", None)  # Force no proxy
             try:
@@ -1676,8 +1707,8 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         return None
 
     last_err = None
-    # SPEED: Only try first 3 client combos (not all 8-9) for faster failure
-    for combo in _get_client_combos()[:3]:
+    # Try first 5 client combos for faster failure detection
+    for combo in _get_client_combos()[:5]:
         opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1923,8 +1954,8 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
     import yt_dlp
     loop = asyncio.get_running_loop()
 
-    # SPEED: Only try first 3 client combos for search+download
-    for combo in _get_client_combos()[:3]:
+    # Try first 5 client combos for search+download
+    for combo in _get_client_combos()[:5]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
             "format": "ba*/b",
@@ -2056,8 +2087,8 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
     import yt_dlp
     loop = asyncio.get_running_loop()
 
-    # SPEED: Only try first 3 client combos for video search+download
-    for combo in _get_client_combos()[:3]:
+    # Try first 5 client combos for video search+download
+    for combo in _get_client_combos()[:5]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
             "format": "bv*[height<=720]+ba*/bv*+ba*/b",
@@ -2209,6 +2240,8 @@ async def _download_stream(stream_url: str, filepath: str,
                     if resp.status != 200:
                         LOG.debug("Stream download HTTP %d (proxy=%s) for: %s",
                                   resp.status, attempt_proxy, stream_url[:80])
+                        if resp.status in (403, 410, 429, 451):
+                            break  # URL is dead/blocked, don't retry with different proxy
                         continue
                     import aiofiles
                     total_bytes = 0
@@ -2271,8 +2304,8 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         LOG.info("Proxy is dead — running yt-dlp without proxy for: %s", url)
 
     last_err = None
-    # SPEED: Only try first 3 client combos for download
-    for combo in _get_client_combos()[:3]:
+    # Try first 5 client combos for download (expanded from 3 for reliability)
+    for combo in _get_client_combos()[:5]:
         run_opts = {**opts}
         # Build extractor_args preserving PO token and visitor data
         yt_args = {"player_client": combo}
