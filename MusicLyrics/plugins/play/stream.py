@@ -23,7 +23,7 @@ from MusicLyrics.plugins.play.queue import (
 from MusicLyrics.utils.downloader import cleanup
 from MusicLyrics.utils.autodelete import auto_delete_service, auto_delete_playing
 
-# SoundCloud & JioSaavn fallbacks — ultimate last resort when all other methods fail
+# SoundCloud & JioSaavn fallbacks
 from MusicLyrics.plugins.play.platforms.soundcloud import (
     search_and_download_soundcloud,
     get_soundcloud_stream_url,
@@ -35,12 +35,10 @@ from MusicLyrics.plugins.play.platforms.jiosaavn import (
 
 LOG = logging.getLogger(__name__)
 
-# Track active chats so we know whether to join or change stream
+# Track active chats
 _active_chats: set[int] = set()
-# Track now-playing messages for auto-deletion
 _now_playing_messages: dict[int, int] = {}  # chat_id -> message_id
 
-# Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
 if pytgcalls is None:
     LOG.warning("STRING_SESSION not set -- music streaming features are disabled.")
 
@@ -62,7 +60,6 @@ try:
 except ImportError:
     LOG.warning("Could not import MediaStream/AudioQuality/VideoQuality from pytgcalls.types")
 
-# Check for Flags support (py-tgcalls >= 2.1)
 if _HAS_MEDIA_STREAM:
     try:
         _ = MediaStream.Flags.IGNORE
@@ -71,7 +68,6 @@ if _HAS_MEDIA_STREAM:
         _HAS_FLAGS = False
         LOG.info("MediaStream.Flags not available (older py-tgcalls version)")
 
-# Check for GroupCallConfig
 try:
     from pytgcalls.types import GroupCallConfig
     _HAS_GROUP_CALL_CONFIG = True
@@ -92,18 +88,12 @@ def _is_url(path: str) -> bool:
 
 
 async def _check_stream_url(url: str) -> bool:
-    """Quick HEAD/GET check to see if a stream URL is still valid.
-
-    Returns True if URL is reachable (2xx/3xx), False otherwise.
-    This prevents passing expired/dead URLs to py-tgcalls/ffprobe
-    which causes JSONDecodeError crashes.
-    """
+    """Quick HEAD/GET check to see if a stream URL is still valid."""
     if not _is_url(url):
-        return True  # Not a URL, skip check
+        return True
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
-            # Try HEAD first (faster), then GET if HEAD fails
             for method in [session.head, session.get]:
                 try:
                     async with method(
@@ -120,7 +110,7 @@ async def _check_stream_url(url: str) -> bool:
                     continue
     except Exception:
         pass
-    return False  # Can't verify — assume dead
+    return False
 
 
 def _validate_media(media_path: str) -> None:
@@ -128,23 +118,17 @@ def _validate_media(media_path: str) -> None:
     if not media_path:
         raise FileNotFoundError("No media path provided.")
     if _is_url(media_path):
-        # Basic URL sanity checks
         if len(media_path) < 10:
             raise FileNotFoundError(f"Invalid media URL: {media_path}")
-        return  # URLs are accepted
+        return
     if not os.path.isfile(media_path):
         raise FileNotFoundError(f"File not found: {media_path}")
-    # Reject empty files (corrupted downloads)
     if os.path.getsize(media_path) < 1000:
         raise FileNotFoundError(f"File too small (likely corrupted): {media_path}")
 
 
 def _make_audio_stream(media_path: str):
-    """Create an audio-only MediaStream (file or URL).
-
-    Uses video_flags=IGNORE for audio-only mode, matching
-    the approach used by AnonXMusic.
-    """
+    """Create an audio-only MediaStream."""
     if not _HAS_MEDIA_STREAM:
         raise RuntimeError("py-tgcalls MediaStream not available.")
 
@@ -158,7 +142,6 @@ def _make_audio_stream(media_path: str):
         except (AttributeError, TypeError) as e:
             LOG.debug("MediaStream with Flags failed: %s", e)
 
-    # Fallback: just audio parameters
     try:
         return MediaStream(
             media_path,
@@ -167,16 +150,11 @@ def _make_audio_stream(media_path: str):
     except (AttributeError, TypeError) as e:
         LOG.debug("MediaStream with AudioQuality failed: %s", e)
 
-    # Last resort
     return MediaStream(media_path)
 
 
 def _make_video_stream(media_path: str):
-    """Create a video+audio MediaStream (file or URL).
-
-    Uses video_flags=AUTO_DETECT for video mode, matching
-    the approach used by AnonXMusic.
-    """
+    """Create a video+audio MediaStream."""
     if not _HAS_MEDIA_STREAM:
         raise RuntimeError("py-tgcalls MediaStream not available.")
 
@@ -191,7 +169,6 @@ def _make_video_stream(media_path: str):
         except (AttributeError, TypeError) as e:
             LOG.debug("MediaStream video with Flags failed: %s", e)
 
-    # Fallback
     try:
         return MediaStream(
             media_path,
@@ -228,22 +205,15 @@ async def stream_audio(
     thumbnail: str = "",
     requester: str = "",
 ) -> None:
-    """Join voice chat (if needed) and start audio stream.
-
-    media_path can be a local file path or a direct stream URL.
-    If streaming a URL fails, automatically downloads the file
-    and retries with the local path.
-    """
+    """Join voice chat (if needed) and start audio stream."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
     _validate_media(media_path)
 
-    # Pre-check stream URL validity to prevent ffprobe/JSONDecodeError crashes
     if _is_url(media_path):
         url_ok = await _check_stream_url(media_path)
         if not url_ok:
             LOG.warning("Stream URL pre-check failed in %s — going directly to fallback", chat_id)
-            # Directly attempt download instead of passing dead URL to py-tgcalls
             try:
                 from MusicLyrics.plugins.play.platforms.youtube import download_audio, search_and_download_audio
                 local_path = None
@@ -257,7 +227,6 @@ async def stream_audio(
                     return
             except Exception:
                 LOG.debug("URL pre-check recovery download failed for %s", chat_id)
-            # Try JioSaavn
             if title:
                 try:
                     js_path, js_info = await search_and_download_jiosaavn(title)
@@ -269,7 +238,6 @@ async def stream_audio(
                         return
                 except Exception:
                     pass
-            # Try SoundCloud
             if title:
                 try:
                     sc_path, sc_info = await search_and_download_soundcloud(title)
@@ -287,20 +255,14 @@ async def stream_audio(
         audio = _make_audio_stream(media_path)
         await _do_play(chat_id, audio)
         _active_chats.add(chat_id)
-        LOG.info("Streaming audio in %s: %s (%s)",
-                 chat_id, title, media_path[:100])
+        LOG.info("Streaming audio in %s: %s (%s)", chat_id, title, media_path[:100])
     except Exception as exc:
-        # If stream URL failed, try downloading and playing local file
         if _is_url(media_path):
-            LOG.warning(
-                "%s with stream URL in %s — downloading file and retrying...",
-                type(exc).__name__, chat_id,
-            )
+            LOG.warning("%s with stream URL in %s — downloading file and retrying...", type(exc).__name__, chat_id)
             try:
                 from MusicLyrics.plugins.play.platforms.youtube import download_audio, search_and_download_audio
                 local_path = await download_audio(media_path)
                 if not local_path or not os.path.isfile(str(local_path)):
-                    # download_audio with URL failed, try search+download with title
                     if title:
                         LOG.info("URL download failed, trying search+download for: %s", title)
                         local_path, _ = await search_and_download_audio(title)
@@ -308,14 +270,11 @@ async def stream_audio(
                     audio = _make_audio_stream(local_path)
                     await _do_play(chat_id, audio)
                     _active_chats.add(chat_id)
-                    LOG.info("Streaming audio (downloaded) in %s: %s (%s)",
-                             chat_id, title, str(local_path)[:100])
+                    LOG.info("Streaming audio (downloaded) in %s: %s (%s)", chat_id, title, str(local_path)[:100])
                     return
             except Exception as dl_exc:
-                LOG.exception("Download fallback also failed in %s: %s",
-                             chat_id, dl_exc)
+                LOG.exception("Download fallback also failed in %s: %s", chat_id, dl_exc)
 
-            # Try JioSaavn before SoundCloud
             if title:
                 try:
                     LOG.info("YouTube download failed, trying JioSaavn for: %s", title)
@@ -329,7 +288,6 @@ async def stream_audio(
                 except Exception:
                     LOG.debug("JioSaavn fallback failed in %s", chat_id)
 
-            # LAST RESORT: SoundCloud fallback when all YouTube methods fail
             if title:
                 try:
                     LOG.info("All YouTube methods failed, trying SoundCloud fallback for: %s", title)
@@ -344,12 +302,10 @@ async def stream_audio(
                         if audio:
                             await _do_play(chat_id, audio)
                             _active_chats.add(chat_id)
-                            LOG.info("Streaming audio (SoundCloud fallback) in %s: %s (%s)",
-                                     chat_id, title, str(sc_path)[:100])
+                            LOG.info("Streaming audio (SoundCloud fallback) in %s: %s (%s)", chat_id, title, str(sc_path)[:100])
                             return
                 except Exception as sc_exc:
-                    LOG.exception("SoundCloud fallback also failed in %s: %s",
-                                 chat_id, sc_exc)
+                    LOG.exception("SoundCloud fallback also failed in %s: %s", chat_id, sc_exc)
 
         LOG.exception("Failed to stream audio in %s: %s", chat_id, exc)
         raise
@@ -363,17 +319,11 @@ async def stream_video(
     thumbnail: str = "",
     requester: str = "",
 ) -> None:
-    """Join voice chat (if needed) and start video stream.
-
-    media_path can be a local file path or a direct stream URL.
-    If streaming a URL fails, automatically downloads the file
-    and retries with the local path.
-    """
+    """Join voice chat (if needed) and start video stream."""
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
     _validate_media(media_path)
 
-    # Pre-check stream URL validity to prevent ffprobe/JSONDecodeError crashes
     if _is_url(media_path):
         url_ok = await _check_stream_url(media_path)
         if not url_ok:
@@ -391,7 +341,6 @@ async def stream_video(
                     return
             except Exception:
                 LOG.debug("Video URL pre-check recovery download failed for %s", chat_id)
-            # Try SoundCloud
             if title:
                 try:
                     sc_path, sc_info = await search_and_download_soundcloud(title)
@@ -409,20 +358,14 @@ async def stream_video(
         stream = _make_video_stream(media_path)
         await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("Streaming video in %s: %s (%s)",
-                 chat_id, title, media_path[:100])
+        LOG.info("Streaming video in %s: %s (%s)", chat_id, title, media_path[:100])
     except Exception as exc:
-        # If stream URL failed, try downloading and playing local file
         if _is_url(media_path):
-            LOG.warning(
-                "%s with video stream URL in %s — downloading file and retrying...",
-                type(exc).__name__, chat_id,
-            )
+            LOG.warning("%s with video stream URL in %s — downloading file and retrying...", type(exc).__name__, chat_id)
             try:
                 from MusicLyrics.plugins.play.platforms.youtube import download_video, search_and_download_video
                 local_path = await download_video(media_path)
                 if not local_path or not os.path.isfile(str(local_path)):
-                    # URL download failed, try search+download with title
                     if title:
                         LOG.info("Video URL download failed, trying search+download for: %s", title)
                         local_path, _ = await search_and_download_video(title)
@@ -430,14 +373,11 @@ async def stream_video(
                     stream = _make_video_stream(local_path)
                     await _do_play(chat_id, stream)
                     _active_chats.add(chat_id)
-                    LOG.info("Streaming video (downloaded) in %s: %s (%s)",
-                             chat_id, title, str(local_path)[:100])
+                    LOG.info("Streaming video (downloaded) in %s: %s (%s)", chat_id, title, str(local_path)[:100])
                     return
             except Exception as dl_exc:
-                LOG.exception("Video download fallback also failed in %s: %s",
-                             chat_id, dl_exc)
+                LOG.exception("Video download fallback also failed in %s: %s", chat_id, dl_exc)
 
-            # LAST RESORT: SoundCloud fallback for video too (plays audio)
             if title:
                 try:
                     LOG.info("All video methods failed, trying SoundCloud fallback for: %s", title)
@@ -452,12 +392,10 @@ async def stream_video(
                         if stream:
                             await _do_play(chat_id, stream)
                             _active_chats.add(chat_id)
-                            LOG.info("Streaming audio via SoundCloud (video fallback) in %s: %s (%s)",
-                                     chat_id, title, str(sc_path)[:100])
+                            LOG.info("Streaming audio via SoundCloud (video fallback) in %s: %s (%s)", chat_id, title, str(sc_path)[:100])
                             return
                 except Exception as sc_exc:
-                    LOG.exception("SoundCloud video fallback also failed in %s: %s",
-                                 chat_id, sc_exc)
+                    LOG.exception("SoundCloud video fallback also failed in %s: %s", chat_id, sc_exc)
 
         LOG.exception("Failed to stream video in %s: %s", chat_id, exc)
         raise
@@ -502,7 +440,6 @@ async def resume_stream(chat_id: int) -> bool:
 
 
 async def seek_stream(chat_id: int, seconds: int) -> bool:
-    """Seek is not natively supported by all py-tgcalls versions."""
     try:
         LOG.warning("Seek requested but not natively supported in this version.")
         return False
@@ -512,7 +449,6 @@ async def seek_stream(chat_id: int, seconds: int) -> bool:
 
 
 async def set_volume(chat_id: int, volume: int) -> bool:
-    """Set playback volume (1-200)."""
     volume = max(1, min(200, volume))
     try:
         await pytgcalls.change_volume(chat_id, volume)
@@ -524,20 +460,25 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 
 async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
+    LOG.info("Attempting to leave voice chat in %s", chat_id)
     try:
         await pytgcalls.leave_group_call(chat_id)
-        LOG.info("Left voice chat in %s", chat_id)
-    except Exception:
-        LOG.exception("Leave VC failed: %s", chat_id)
+        LOG.info("Successfully left voice chat in %s", chat_id)
+    except Exception as e:
+        LOG.exception("Leave VC failed: %s - %s", chat_id, e)
+    
     _active_chats.discard(chat_id)
-    # Delete now-playing message if it exists
+    
+    # Delete now-playing message if exists
     if chat_id in _now_playing_messages:
         try:
             msg_id = _now_playing_messages[chat_id]
             await bot.delete_messages(chat_id, msg_id)
-        except Exception:
-            pass
+            LOG.info("Deleted now-playing message in %s", chat_id)
+        except Exception as e:
+            LOG.debug("Failed to delete now-playing message: %s", e)
         del _now_playing_messages[chat_id]
+    
     await clear_queue(chat_id)
 
 
@@ -571,22 +512,28 @@ async def _on_stream_end(client, update):
         LOG.warning("Stream end event with unknown chat_id: %s (type: %s)", update, type(update).__name__)
         return
 
-    # Clean up the finished track's file (if it was a local download)
+    LOG.info("Stream ended in chat %s", chat_id)
+
+    # Clean up the finished track's file
     finished = await get_current(chat_id)
     if finished and not finished.is_stream_url and finished.media_path:
         cleanup(finished.media_path)
 
-    # Delete the now-playing message
+    # Delete the old now-playing message
     if chat_id in _now_playing_messages:
         try:
             msg_id = _now_playing_messages[chat_id]
             await bot.delete_messages(chat_id, msg_id)
-        except Exception:
-            pass
+            LOG.debug("Deleted old now-playing message in %s", chat_id)
+        except Exception as e:
+            LOG.debug("Failed to delete old message: %s", e)
         del _now_playing_messages[chat_id]
 
+    # Get next track
     next_item = await skip_queue(chat_id)
+    
     if next_item is None:
+        LOG.info("Queue finished in %s, leaving voice chat", chat_id)
         await leave_voice_chat(chat_id)
         try:
             finish_msg = await bot.send_message(
@@ -594,17 +541,18 @@ async def _on_stream_end(client, update):
                 "✅ **Queue সম্পন্ন!**\n\n"
                 "সব গান শেষ হয়েছে। আবার গান চালাতে `/play` ব্যবহার করুন। 🎵",
             )
-            # Auto-delete this message after 10 seconds
-            await asyncio.sleep(10)
+            # Auto-delete after 8 seconds
+            await asyncio.sleep(8)
             try:
                 await finish_msg.delete()
             except Exception:
                 pass
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.debug("Failed to send finish message: %s", e)
         return
 
     # Play next track
+    LOG.info("Playing next track: %s", next_item.title)
     try:
         # Re-fetch stream URL if it was a stream URL (they expire)
         if next_item.is_stream_url:
@@ -626,8 +574,9 @@ async def _on_stream_end(client, update):
                         next_item.media_path = new_url
                         LOG.info("Re-fetched SoundCloud stream URL for: %s", next_item.title)
             except Exception:
-                LOG.warning("Failed to re-fetch stream URL for: %s — will try playing with existing URL", next_item.title)
+                LOG.warning("Failed to re-fetch stream URL for: %s", next_item.title)
 
+        # Play the next track
         if next_item.stream_type == "video":
             await stream_video(
                 chat_id, next_item.media_path,
@@ -639,18 +588,26 @@ async def _on_stream_end(client, update):
                 title=next_item.title, duration=next_item.duration,
             )
 
+        # Send now-playing message
         dur = format_duration(next_item.duration)
         np_msg = await bot.send_message(
             chat_id,
-            f"**▶️ এখন চলছে**\n\n"
-            f"**🎵 শিরোনাম:** {next_item.title}\n"
-            f"**⏱ সময়:** {dur}\n"
-            f"**👤 অনুরোধকারী:** {next_item.requester}",
+            f"▶️ **চলছে:** {next_item.title}\n"
+            f"⏱ {dur} | 🎤 {next_item.requester}",
         )
         _now_playing_messages[chat_id] = np_msg.id
-    except Exception:
-        LOG.exception("Failed to play next in queue for %s", chat_id)
-        await leave_voice_chat(chat_id)
+        LOG.info("Now playing message sent: %s", np_msg.id)
+    except Exception as e:
+        LOG.exception("Failed to play next in queue for %s: %s", chat_id, e)
+        try:
+            await leave_voice_chat(chat_id)
+            await bot.send_message(
+                chat_id,
+                "❌ **পরবর্তী গান চালাতে ত্রুটি হয়েছে।**\n"
+                "Voice chat থেকে বেরিয়ে গেছি। দয়া করে আবার `/play` দিন।",
+            )
+        except Exception:
+            pass
 
 
 # Register the stream-end callback with compatibility for multiple py-tgcalls versions
