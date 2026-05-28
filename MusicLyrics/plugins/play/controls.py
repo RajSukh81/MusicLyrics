@@ -59,7 +59,7 @@ def _control_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-# ── /pause ───────────────────────────────────────────────────────────────────
+# ── /pause ────────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("pause") & not_edited)
 async def pause_cmd(client: Client, message: Message):
@@ -76,7 +76,7 @@ async def pause_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ── /resume ──────────────────────────────────────────────────────────────────
+# ── /resume ───────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("resume") & not_edited)
 async def resume_cmd(client: Client, message: Message):
@@ -93,7 +93,7 @@ async def resume_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ── /skip | /next ────────────────────────────────────────────────────────────
+# ── /skip | /next ─────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command(["skip", "next"]) & not_edited)
 async def skip_cmd(client: Client, message: Message):
@@ -106,7 +106,7 @@ async def skip_cmd(client: Client, message: Message):
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
-        reply = await message.reply_text("⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।")
+        reply = await message.reply_text("⏹ **Queue শেষ।** Voice chat থেকে বের হয়ে গেছি।")
         await auto_delete_service(message, reply)
         return
 
@@ -120,9 +120,9 @@ async def skip_cmd(client: Client, message: Message):
         dur = format_duration(next_item.duration)
         reply = await message.reply_text(
             f"⏭ **Skipped!**\n\n"
-            f"**▶️ Now Playing:** {next_item.title}\n"
-            f"**⏱ Duration:** {dur}\n"
-            f"**👤 Requested by:** {next_item.requester}",
+            f"**▶️ এখন চলছে:** {next_item.title}\n"
+            f"**⏱ সময়:** {dur}\n"
+            f"**👤 অনুরোধকারী:** {next_item.requester}",
             reply_markup=_control_keyboard(),
         )
         await auto_delete_playing(message, reply)
@@ -132,7 +132,7 @@ async def skip_cmd(client: Client, message: Message):
         await auto_delete_service(message, reply)
 
 
-# ── /stop | /end ─────────────────────────────────────────────────────────────
+# ── /stop | /end ─────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command(["stop", "end"]) & not_edited)
 async def stop_cmd(client: Client, message: Message):
@@ -149,7 +149,7 @@ async def stop_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ── /seek <seconds> ──────────────────────────────────────────────────────────
+# ── /seek <seconds> ────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("seek") & not_edited)
 async def seek_cmd(client: Client, message: Message):
@@ -178,7 +178,7 @@ async def seek_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ── /volume <1-200> ──────────────────────────────────────────────────────────
+# ── /volume <1-200> ────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command(["volume", "vol"]) & not_edited)
 async def volume_cmd(client: Client, message: Message):
@@ -209,7 +209,7 @@ async def volume_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ── /queue ───────────────────────────────────────────────────────────────────
+# ── /queue ───────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("queue") & not_edited)
 async def queue_cmd(client: Client, message: Message):
@@ -220,13 +220,13 @@ async def queue_cmd(client: Client, message: Message):
         await auto_delete_service(message, reply)
         return
     cq = await get_chat_queue(chat_id)
-    lines = ["**📜 Current Queue:**\n"]
+    lines = ["**📜 বর্তমান Queue:**\n"]
     for i, item in enumerate(items):
         marker = "▶️" if i == cq.current_index else f"{i + 1}."
         dur = format_duration(item.duration)
         kind = "🎬" if item.stream_type == "video" else "🎵"
         lines.append(f"{marker} {kind} **{item.title}** [{dur}] — {item.requester}")
-    loop_status = "🔁 Loop: ON" if cq.loop_mode else "🔁 Loop: OFF"
+    loop_status = "🔁 Loop: চালু" if cq.loop_mode else "🔁 Loop: বন্ধ"
     lines.append(f"\n{loop_status}")
     reply = await message.reply_text("\n".join(lines))
     await auto_delete_playing(message, reply)
@@ -245,10 +245,10 @@ async def nowplaying_cmd(client: Client, message: Message):
     dur = format_duration(current.duration)
     kind = "🎬 Video" if current.stream_type == "video" else "🎵 Audio"
     text = (
-        f"**▶️ Now Playing**\n\n"
+        f"**▶️ এখন চলছে**\n\n"
         f"**{kind}:** [{current.title}]({current.url})\n"
-        f"**⏱ Duration:** {dur}\n"
-        f"**👤 Requested by:** {current.requester}"
+        f"**⏱ সময়:** {dur}\n"
+        f"**👤 অনুরোধকারী:** {current.requester}"
     )
     if current.thumbnail:
         reply = await bot.send_photo(
@@ -260,20 +260,20 @@ async def nowplaying_cmd(client: Client, message: Message):
     await auto_delete_playing(message, reply)
 
 
-# ── /loop ────────────────────────────────────────────────────────────────────
+# ── /loop ────────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("loop") & not_edited)
 async def loop_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     state = await toggle_loop(chat_id)
     if state:
-        reply = await message.reply_text("🔁 **Loop ON** — বর্তমান গান বারবার চলবে।")
+        reply = await message.reply_text("🔁 **Loop চালু** — বর্তমান গান বারবার চলবে।")
     else:
-        reply = await message.reply_text("🔁 **Loop OFF** — Queue স্বাভাবিকভাবে চলবে।")
+        reply = await message.reply_text("🔁 **Loop বন্ধ** — Queue স্বাভাবিকভাবে চলবে।")
     await auto_delete_service(message, reply)
 
 
-# ── /shuffle ─────────────────────────────────────────────────────────────────
+# ── /shuffle ───────────────────────────────────────────────────────────[...]
 
 @bot.on_message(filters.command("shuffle") & not_edited)
 async def shuffle_cmd(client: Client, message: Message):
@@ -288,9 +288,9 @@ async def shuffle_cmd(client: Client, message: Message):
     await auto_delete_service(message, reply)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════[...]
 # Callback query handlers (inline keyboard buttons)
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════[...]
 
 @bot.on_callback_query(filters.regex(r"^ctl_pause$"))
 async def cb_pause(client: Client, callback: CallbackQuery):
@@ -324,7 +324,7 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         await leave_voice_chat(chat_id)
         await callback.answer("Queue শেষ!")
         reply = await callback.message.reply_text(
-            "⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।"
+            "⏹ **Queue শেষ।** Voice chat থেকে বের হয়ে গেছি।"
         )
         await auto_delete_service(reply)
         return
@@ -340,8 +340,8 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         dur = format_duration(next_item.duration)
         reply = await callback.message.reply_text(
             f"⏭ **Skipped!**\n\n"
-            f"**▶️ Now Playing:** {next_item.title}\n"
-            f"**⏱ Duration:** {dur}",
+            f"**▶️ এখন চলছে:** {next_item.title}\n"
+            f"**⏱ সময়:** {dur}",
             reply_markup=_control_keyboard(),
         )
         await auto_delete_playing(reply)
@@ -387,6 +387,6 @@ async def cb_loop(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     state = await toggle_loop(chat_id)
     await callback.answer(
-        "🔁 Loop ON" if state else "🔁 Loop OFF",
+        "🔁 Loop চালু" if state else "🔁 Loop বন্ধ",
         show_alert=False,
     )

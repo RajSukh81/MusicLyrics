@@ -37,6 +37,8 @@ LOG = logging.getLogger(__name__)
 
 # Track active chats so we know whether to join or change stream
 _active_chats: set[int] = set()
+# Track now-playing messages for auto-deletion
+_now_playing_messages: dict[int, int] = {}  # chat_id -> message_id
 
 # Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
 if pytgcalls is None:
@@ -524,9 +526,18 @@ async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
     try:
         await pytgcalls.leave_group_call(chat_id)
+        LOG.info("Left voice chat in %s", chat_id)
     except Exception:
         LOG.exception("Leave VC failed: %s", chat_id)
     _active_chats.discard(chat_id)
+    # Delete now-playing message if it exists
+    if chat_id in _now_playing_messages:
+        try:
+            msg_id = _now_playing_messages[chat_id]
+            await bot.delete_messages(chat_id, msg_id)
+        except Exception:
+            pass
+        del _now_playing_messages[chat_id]
     await clear_queue(chat_id)
 
 
@@ -565,17 +576,30 @@ async def _on_stream_end(client, update):
     if finished and not finished.is_stream_url and finished.media_path:
         cleanup(finished.media_path)
 
+    # Delete the now-playing message
+    if chat_id in _now_playing_messages:
+        try:
+            msg_id = _now_playing_messages[chat_id]
+            await bot.delete_messages(chat_id, msg_id)
+        except Exception:
+            pass
+        del _now_playing_messages[chat_id]
+
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
         try:
             finish_msg = await bot.send_message(
                 chat_id,
-                "**Queue finished!**\n"
-                "Leaving voice chat.\n\n"
-                "Use `/play` to play again.",
+                "✅ **Queue সম্পন্ন!**\n\n"
+                "সব গান শেষ হয়েছে। আবার গান চালাতে `/play` ব্যবহার করুন। 🎵",
             )
-            await auto_delete_service(finish_msg)
+            # Auto-delete this message after 10 seconds
+            await asyncio.sleep(10)
+            try:
+                await finish_msg.delete()
+            except Exception:
+                pass
         except Exception:
             pass
         return
@@ -618,12 +642,12 @@ async def _on_stream_end(client, update):
         dur = format_duration(next_item.duration)
         np_msg = await bot.send_message(
             chat_id,
-            f"**Now Playing**\n\n"
-            f"**Title:** {next_item.title}\n"
-            f"**Duration:** {dur}\n"
-            f"**Requested by:** {next_item.requester}",
+            f"**▶️ এখন চলছে**\n\n"
+            f"**🎵 শিরোনাম:** {next_item.title}\n"
+            f"**⏱ সময়:** {dur}\n"
+            f"**👤 অনুরোধকারী:** {next_item.requester}",
         )
-        await auto_delete_playing(np_msg)
+        _now_playing_messages[chat_id] = np_msg.id
     except Exception:
         LOG.exception("Failed to play next in queue for %s", chat_id)
         await leave_voice_chat(chat_id)
