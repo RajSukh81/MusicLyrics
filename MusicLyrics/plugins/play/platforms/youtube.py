@@ -228,8 +228,8 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
     instances = list(_PIPED_INSTANCES)
     random.shuffle(instances)
 
-    # Try instances in batches of 4 concurrently for speed
-    batch_size = 4
+    # Try instances in batches of 5 concurrently for speed
+    batch_size = 5
     for i in range(0, len(instances), batch_size):
         batch = instances[i:i + batch_size]
         tasks = [_try_piped_instance(base_url, video_id) for base_url in batch]
@@ -256,7 +256,7 @@ async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
             async with session.get(
                 f"{base_url}/streams/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=8),
+                timeout=aiohttp.ClientTimeout(total=6),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -285,8 +285,8 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
     instances = list(_INVIDIOUS_INSTANCES)
     random.shuffle(instances)
 
-    # Try instances in batches of 4 concurrently
-    batch_size = 4
+    # Try instances in batches of 5 concurrently
+    batch_size = 5
     for i in range(0, len(instances), batch_size):
         batch = instances[i:i + batch_size]
         tasks = [_try_invidious_instance(base_url, video_id) for base_url in batch]
@@ -313,7 +313,7 @@ async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict
             async with session.get(
                 f"{base_url}/api/v1/videos/{video_id}",
                 headers=_PROXY_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=8),
+                timeout=aiohttp.ClientTimeout(total=6),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -438,7 +438,7 @@ async def _cobalt_get_stream(video_id: str, audio_only: bool = True) -> Optional
                             f"{instance}{endpoint}",
                             json=payload,
                             headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=20),
+                            timeout=aiohttp.ClientTimeout(total=10),
                         ) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
@@ -1113,9 +1113,9 @@ def _base_ytdlp_opts(client_combo: Optional[list[str]] = None) -> dict:
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        "socket_timeout": 15,
-        "retries": 3,
-        "fragment_retries": 3,
+        "socket_timeout": 10,
+        "retries": 2,
+        "fragment_retries": 2,
         "noplaylist": True,
         "no_color": True,
         "noprogress": True,
@@ -1256,7 +1256,7 @@ async def _innertube_search(query: str, limit: int = 5) -> list[dict]:
             _INNERTUBE_SEARCH_URL,
             json=payload,
             headers=_HEADERS,
-            timeout=aiohttp.ClientTimeout(total=15),
+            timeout=aiohttp.ClientTimeout(total=8),
         ) as resp:
             if resp.status != 200:
                 LOG.warning("Innertube search HTTP %d for: %s", resp.status, query)
@@ -1374,44 +1374,66 @@ def _ytdlp_search_sync(query: str, max_results: int = 1) -> Optional[dict]:
 async def get_audio_stream_url(url: str) -> Optional[str]:
     """Extract direct audio stream URL (no download).
 
-    Priority: Cobalt -> Innertube Player API -> Piped -> Invidious -> yt-dlp.
-    Cobalt is tried first because it's most reliable on cloud servers.
+    SPEED OPTIMISED: Cobalt + Innertube + Piped run CONCURRENTLY.
+    First successful result wins — no waiting for sequential failures.
     """
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Cobalt API (most reliable on cloud servers — bypasses YouTube blocks)
-        try:
-            stream_url = await _cobalt_get_stream(video_id, audio_only=True)
-            if stream_url:
-                LOG.info("Audio stream via Cobalt for %s", video_id)
-                return stream_url
-        except Exception:
-            LOG.debug("Cobalt audio failed for %s", video_id)
+        # Phase 1: Run Cobalt, Innertube, and Piped CONCURRENTLY
+        # Whichever returns first wins — massive speed improvement
+        async def _try_cobalt():
+            try:
+                return await _cobalt_get_stream(video_id, audio_only=True)
+            except Exception:
+                return None
 
-        # Try 2: Innertube Player API (direct, no yt-dlp)
-        try:
-            data = await _innertube_player(video_id)
-            if data:
-                stream_url = _best_innertube_audio(data)
-                if stream_url:
-                    LOG.info("Audio stream via Innertube for %s", video_id)
-                    return stream_url
-        except Exception:
-            LOG.debug("Innertube audio failed for %s", video_id)
+        async def _try_innertube():
+            try:
+                data = await _innertube_player(video_id)
+                if data:
+                    return _best_innertube_audio(data)
+            except Exception:
+                pass
+            return None
 
-        # Try 3: Piped proxy
-        try:
-            data = await _piped_get_streams(video_id)
-            if data:
-                stream_url = _best_piped_audio_url(data)
-                if stream_url:
-                    LOG.info("Audio stream via Piped for %s", video_id)
-                    return stream_url
-        except Exception:
-            LOG.debug("Piped audio failed for %s", video_id)
+        async def _try_piped():
+            try:
+                data = await _piped_get_streams(video_id)
+                if data:
+                    return _best_piped_audio_url(data)
+            except Exception:
+                pass
+            return None
 
-        # Try 4: Invidious proxy
+        # Fire all three concurrently, return first non-None result
+        tasks = [
+            asyncio.create_task(_try_cobalt()),
+            asyncio.create_task(_try_innertube()),
+            asyncio.create_task(_try_piped()),
+        ]
+
+        # Use asyncio.wait with FIRST_COMPLETED to get fastest result
+        done_results = []
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                    if result:
+                        # Cancel remaining tasks
+                        for p in pending:
+                            p.cancel()
+                        LOG.info("Audio stream URL obtained (concurrent) for %s", video_id)
+                        return result
+                except Exception:
+                    pass
+
+        # Phase 2: Invidious (fallback, not included in concurrent batch
+        # because it's less reliable and adds noise)
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -1422,7 +1444,7 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious audio failed for %s", video_id)
 
-    # Try 5: yt-dlp (last resort)
+    # Phase 3: yt-dlp (last resort — only try first 2 client combos for speed)
     LOG.info("All direct APIs failed, trying yt-dlp for audio: %s", url)
     loop = asyncio.get_running_loop()
     try:
@@ -1432,66 +1454,66 @@ async def get_audio_stream_url(url: str) -> Optional[str]:
     except Exception:
         LOG.exception("Audio stream URL extraction failed: %s", url)
 
-    # Try 6: Retry once after clearing dead instance caches
-    # (instances may have recovered)
-    if _dead_piped or _dead_invidious:
-        LOG.info("Clearing dead instance caches and retrying for: %s", url)
-        _dead_piped.clear()
-        _dead_invidious.clear()
-        if video_id:
-            try:
-                data = await _piped_get_streams(video_id)
-                if data:
-                    stream_url = _best_piped_audio_url(data)
-                    if stream_url:
-                        return stream_url
-            except Exception:
-                pass
-
     return None
 
 
 async def get_video_stream_url(url: str) -> Optional[str]:
     """Extract direct video stream URL (no download).
 
-    Priority: Cobalt -> Innertube Player API -> Piped -> Invidious -> yt-dlp.
-    Cobalt is tried first because it's most reliable on cloud servers.
+    SPEED OPTIMISED: Cobalt + Innertube + Piped run CONCURRENTLY.
+    First successful result wins — no waiting for sequential failures.
     """
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try 1: Cobalt API (most reliable on cloud servers)
-        try:
-            stream_url = await _cobalt_get_stream(video_id, audio_only=False)
-            if stream_url:
-                LOG.info("Video stream via Cobalt for %s", video_id)
-                return stream_url
-        except Exception:
-            LOG.debug("Cobalt video failed for %s", video_id)
+        # Phase 1: Run Cobalt, Innertube, and Piped CONCURRENTLY
+        async def _try_cobalt():
+            try:
+                return await _cobalt_get_stream(video_id, audio_only=False)
+            except Exception:
+                return None
 
-        # Try 2: Innertube Player API
-        try:
-            data = await _innertube_player(video_id)
-            if data:
-                stream_url = _best_innertube_video(data)
-                if stream_url:
-                    LOG.info("Video stream via Innertube for %s", video_id)
-                    return stream_url
-        except Exception:
-            LOG.debug("Innertube video failed for %s", video_id)
+        async def _try_innertube():
+            try:
+                data = await _innertube_player(video_id)
+                if data:
+                    return _best_innertube_video(data)
+            except Exception:
+                pass
+            return None
 
-        # Try 3: Piped proxy
-        try:
-            data = await _piped_get_streams(video_id)
-            if data:
-                stream_url = _best_piped_video_url(data)
-                if stream_url:
-                    LOG.info("Video stream via Piped for %s", video_id)
-                    return stream_url
-        except Exception:
-            LOG.debug("Piped video failed for %s", video_id)
+        async def _try_piped():
+            try:
+                data = await _piped_get_streams(video_id)
+                if data:
+                    return _best_piped_video_url(data)
+            except Exception:
+                pass
+            return None
 
-        # Try 4: Invidious proxy
+        tasks = [
+            asyncio.create_task(_try_cobalt()),
+            asyncio.create_task(_try_innertube()),
+            asyncio.create_task(_try_piped()),
+        ]
+
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                    if result:
+                        for p in pending:
+                            p.cancel()
+                        LOG.info("Video stream URL obtained (concurrent) for %s", video_id)
+                        return result
+                except Exception:
+                    pass
+
+        # Phase 2: Invidious fallback
         try:
             data = await _invidious_get_streams(video_id)
             if data:
@@ -1502,7 +1524,7 @@ async def get_video_stream_url(url: str) -> Optional[str]:
         except Exception:
             LOG.debug("Invidious video failed for %s", video_id)
 
-    # Try 5: yt-dlp (last resort)
+    # Phase 3: yt-dlp (last resort)
     LOG.info("All direct APIs failed, trying yt-dlp for video: %s", url)
     loop = asyncio.get_running_loop()
     try:
@@ -1512,46 +1534,53 @@ async def get_video_stream_url(url: str) -> Optional[str]:
     except Exception:
         LOG.exception("Video stream URL extraction failed: %s", url)
 
-    # Try 6: Retry once after clearing dead instance caches
-    if _dead_piped or _dead_invidious:
-        LOG.info("Clearing dead instance caches and retrying for video: %s", url)
-        _dead_piped.clear()
-        _dead_invidious.clear()
-        if video_id:
-            try:
-                data = await _piped_get_streams(video_id)
-                if data:
-                    stream_url = _best_piped_video_url(data)
-                    if stream_url:
-                        return stream_url
-            except Exception:
-                pass
-
     return None
 
 
 async def get_video_info(url: str) -> Optional[dict]:
-    """Get video metadata. Tries Innertube/Piped/Invidious first, yt-dlp fallback."""
+    """Get video metadata. SPEED OPTIMISED: Innertube + Piped run concurrently."""
     video_id = _extract_video_id(url)
 
     if video_id:
-        # Try Innertube Player API
-        try:
-            data = await _innertube_player(video_id)
-            if data and data.get("videoDetails", {}).get("title"):
-                return _innertube_video_info(data, video_id)
-        except Exception:
-            LOG.debug("Innertube info failed for %s", video_id)
+        # Run Innertube and Piped concurrently for info
+        async def _info_innertube():
+            try:
+                data = await _innertube_player(video_id)
+                if data and data.get("videoDetails", {}).get("title"):
+                    return _innertube_video_info(data, video_id)
+            except Exception:
+                pass
+            return None
 
-        # Try Piped
-        try:
-            data = await _piped_get_streams(video_id)
-            if data and data.get("title"):
-                return _piped_video_info(data, video_id)
-        except Exception:
-            LOG.debug("Piped info failed for %s", video_id)
+        async def _info_piped():
+            try:
+                data = await _piped_get_streams(video_id)
+                if data and data.get("title"):
+                    return _piped_video_info(data, video_id)
+            except Exception:
+                pass
+            return None
 
-        # Try Invidious
+        tasks = [
+            asyncio.create_task(_info_innertube()),
+            asyncio.create_task(_info_piped()),
+        ]
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                    if result:
+                        for p in pending:
+                            p.cancel()
+                        return result
+                except Exception:
+                    pass
+
+        # Invidious fallback (less reliable)
         try:
             data = await _invidious_get_streams(video_id)
             if data and data.get("title"):
@@ -1647,7 +1676,8 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         return None
 
     last_err = None
-    for combo in _get_client_combos():
+    # SPEED: Only try first 3 client combos (not all 8-9) for faster failure
+    for combo in _get_client_combos()[:3]:
         opts = {**_base_ytdlp_opts(client_combo=combo), "format": fmt}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1668,7 +1698,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
             LOG.warning("Stream URL attempt failed with client %s: %s", combo, exc)
             continue
 
-    # Ultimate fallback: try without proxy if proxy was being used
+    # Fallback: try without proxy if proxy was being used
     if last_err and _get_proxy():
         LOG.info("Retrying stream URL WITHOUT proxy for: %s", url)
         try:
@@ -1686,14 +1716,16 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         except Exception as exc2:
             LOG.warning("No-proxy fallback also failed: %s", exc2)
 
-    # Ultimate fallback 1: try "b" (best anything) with default client
+    # Fallback: try "b" (best anything) with default client, no restrictions
     if last_err:
         LOG.info("Retrying with permissive format 'b' for: %s", url)
         try:
             fb_opts = _base_ytdlp_opts()
             fb_opts["format"] = "b"
             fb_opts["check_formats"] = False
-            fb_opts.pop("proxy", None)  # Try without proxy for broader compatibility
+            fb_opts.pop("proxy", None)
+            # Remove player_client restriction — let yt-dlp decide
+            fb_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
             with yt_dlp.YoutubeDL(fb_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 result = _extract_stream_from_info(info, audio_only)
@@ -1702,42 +1734,6 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
                     return result
         except Exception as exc2:
             LOG.warning("Permissive fallback also failed: %s", exc2)
-
-    # Ultimate fallback 2: try with NO format restriction (accept anything)
-    if last_err:
-        LOG.info("Retrying with no format restriction for: %s", url)
-        try:
-            worst_opts = _base_ytdlp_opts()
-            worst_opts.pop("proxy", None)  # No proxy
-            worst_opts["format"] = "worst"  # even worst quality is better than nothing
-            worst_opts["check_formats"] = False  # Skip ALL format verification
-            with yt_dlp.YoutubeDL(worst_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                result = _extract_stream_from_info(info, audio_only)
-                if result:
-                    LOG.info("Stream URL obtained via worst-format fallback for %s", url)
-                    return result
-        except Exception as exc3:
-            LOG.warning("Worst-format fallback also failed: %s", exc3)
-
-    # Ultimate fallback 3: try "default" client (yt-dlp auto-selects best)
-    if last_err:
-        LOG.info("Retrying with default yt-dlp client for: %s", url)
-        try:
-            default_opts = _base_ytdlp_opts()
-            default_opts.pop("proxy", None)
-            default_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
-            default_opts["check_formats"] = False
-            # Remove player_client restriction — let yt-dlp decide
-            default_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
-            with yt_dlp.YoutubeDL(default_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                result = _extract_stream_from_info(info, audio_only)
-                if result:
-                    LOG.info("Stream URL obtained via default-client fallback for %s", url)
-                    return result
-        except Exception as exc4:
-            LOG.warning("Default-client fallback also failed: %s", exc4)
 
     if last_err:
         LOG.error("All yt-dlp stream URL attempts failed: %s — %s", url, last_err)
@@ -1927,7 +1923,8 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
     import yt_dlp
     loop = asyncio.get_running_loop()
 
-    for combo in _get_client_combos():
+    # SPEED: Only try first 3 client combos for search+download
+    for combo in _get_client_combos()[:3]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
             "format": "ba*/b",
@@ -2059,7 +2056,8 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
     import yt_dlp
     loop = asyncio.get_running_loop()
 
-    for combo in _get_client_combos():
+    # SPEED: Only try first 3 client combos for video search+download
+    for combo in _get_client_combos()[:3]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
             "format": "bv*[height<=720]+ba*/bv*+ba*/b",
@@ -2205,7 +2203,7 @@ async def _download_stream(stream_url: str, filepath: str,
                 async with session.get(
                     stream_url,
                     headers=_PROXY_HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=120, connect=10),
+                    timeout=aiohttp.ClientTimeout(total=60, connect=8),
                     **req_kwargs,
                 ) as resp:
                     if resp.status != 200:
@@ -2237,7 +2235,8 @@ def _get_info_sync(url: str) -> Optional[dict]:
     import yt_dlp
 
     last_err = None
-    for combo in _get_client_combos():
+    # SPEED: Only try first 2 client combos for info (metadata is simple)
+    for combo in _get_client_combos()[:2]:
         opts = {**_base_ytdlp_opts(client_combo=combo), "skip_download": True}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -2272,7 +2271,8 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         LOG.info("Proxy is dead — running yt-dlp without proxy for: %s", url)
 
     last_err = None
-    for combo in _get_client_combos():
+    # SPEED: Only try first 3 client combos for download
+    for combo in _get_client_combos()[:3]:
         run_opts = {**opts}
         # Build extractor_args preserving PO token and visitor data
         yt_args = {"player_client": combo}
@@ -2347,15 +2347,18 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
         except Exception as exc_np:
             LOG.warning("No-proxy download fallback also failed: %s", exc_np)
 
-    # Ultimate fallback: try "b" format with default client
+    # Fallback: try "b" format with default client, no proxy, no restrictions
     if last_err:
         LOG.info("Retrying download with permissive format 'b' for: %s", url)
         try:
             fallback_opts = {**opts, "format": "b",
                              "check_formats": False}
+            fallback_opts.pop("proxy", None)
             cookie = _get_cookie()
             if cookie:
                 fallback_opts["cookiefile"] = cookie
+            # Remove player_client restriction — let yt-dlp decide
+            fallback_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
             with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                 info = await loop.run_in_executor(
                     None, lambda: ydl.extract_info(url, download=True)
@@ -2371,59 +2374,6 @@ async def _run_ytdlp(url: str, opts: dict) -> Optional[str]:
                         return matches[0]
         except Exception as exc2:
             LOG.warning("Permissive download fallback also failed: %s", exc2)
-
-    # Ultimate fallback 2: try "worst" format (any quality, just get something)
-    if last_err:
-        LOG.info("Retrying download with 'worst' format for: %s", url)
-        try:
-            worst_opts = {**opts, "format": "worst",
-                          "check_formats": False}
-            cookie = _get_cookie()
-            if cookie:
-                worst_opts["cookiefile"] = cookie
-            with yt_dlp.YoutubeDL(worst_opts) as ydl:
-                info = await loop.run_in_executor(
-                    None, lambda: ydl.extract_info(url, download=True)
-                )
-                if info:
-                    path = ydl.prepare_filename(info)
-                    if os.path.exists(path):
-                        return path
-                    base = os.path.splitext(path)[0]
-                    matches = sorted(glob.glob(f"{base}.*"),
-                                     key=os.path.getmtime, reverse=True)
-                    if matches:
-                        return matches[0]
-        except Exception as exc3:
-            LOG.warning("Worst-format download fallback also failed: %s", exc3)
-
-    # Ultimate fallback 3: default yt-dlp client with no restrictions
-    if last_err:
-        LOG.info("Retrying download with default client for: %s", url)
-        try:
-            default_opts = {**opts, "format": "b",
-                            "check_formats": False}
-            default_opts.pop("proxy", None)
-            cookie = _get_cookie()
-            if cookie:
-                default_opts["cookiefile"] = cookie
-            # Remove player_client restriction
-            default_opts.get("extractor_args", {}).get("youtube", {}).pop("player_client", None)
-            with yt_dlp.YoutubeDL(default_opts) as ydl:
-                info = await loop.run_in_executor(
-                    None, lambda: ydl.extract_info(url, download=True)
-                )
-                if info:
-                    path = ydl.prepare_filename(info)
-                    if os.path.exists(path):
-                        return path
-                    base = os.path.splitext(path)[0]
-                    matches = sorted(glob.glob(f"{base}.*"),
-                                     key=os.path.getmtime, reverse=True)
-                    if matches:
-                        return matches[0]
-        except Exception as exc4:
-            LOG.warning("Default-client download fallback also failed: %s", exc4)
 
     if last_err:
         LOG.error("All yt-dlp download attempts failed: %s — %s", url, last_err)
