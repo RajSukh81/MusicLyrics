@@ -60,8 +60,10 @@ _PIPED_INSTANCES = [
 ]
 
 # Track dead Piped/Invidious instances at runtime to skip them
-_dead_piped: set[str] = set()
-_dead_invidious: set[str] = set()
+# Each entry is (instance_url, timestamp_when_marked_dead)
+_dead_piped: dict[str, float] = {}
+_dead_invidious: dict[str, float] = {}
+_DEAD_INSTANCE_RECOVERY_SECONDS = 600  # Re-try dead instances after 10 minutes
 
 # Invidious instances as additional fallback (updated May 2026)
 # These act as YouTube proxies — no cookies needed
@@ -113,8 +115,8 @@ _PROXY_HEADERS = {
 _proxy_dead = False
 _proxy_fail_count = 0
 _proxy_dead_since: float = 0.0  # timestamp when proxy was disabled
-_PROXY_FAIL_THRESHOLD = 1  # Disable after 1 failure (fast fail — don't waste time)
-_PROXY_RECOVERY_SECONDS = 180  # Re-try proxy every 3 minutes
+_PROXY_FAIL_THRESHOLD = 3  # Disable after 3 failures (tolerate transient errors)
+_PROXY_RECOVERY_SECONDS = 120  # Re-try proxy every 2 minutes
 
 
 def _mark_proxy_failed():
@@ -241,8 +243,14 @@ async def _piped_get_streams(video_id: str) -> Optional[dict]:
 
 async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
     """Try a single Piped instance."""
+    import time as _t
+    # Skip known-dead instances, but auto-recover after timeout
     if base_url in _dead_piped:
-        return None  # Skip known-dead instances
+        if _t.time() - _dead_piped[base_url] < _DEAD_INSTANCE_RECOVERY_SECONDS:
+            return None  # Still in cooldown
+        else:
+            del _dead_piped[base_url]  # Recovery: give it another chance
+            LOG.info("Piped instance %s recovered after cooldown", base_url)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -258,10 +266,10 @@ async def _try_piped_instance(base_url: str, video_id: str) -> Optional[dict]:
                 else:
                     LOG.debug("Piped %s returned HTTP %d for %s", base_url, resp.status, video_id)
                     if resp.status in (502, 503, 520, 521, 522, 523, 524):
-                        _dead_piped.add(base_url)
+                        _dead_piped[base_url] = _t.time()
                         LOG.info("Piped instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
-        _dead_piped.add(base_url)
+        _dead_piped[base_url] = _t.time()
         LOG.debug("Piped %s timed out for %s — marked dead", base_url, video_id)
     except Exception as e:
         LOG.debug("Piped %s failed for %s: %s", base_url, video_id, e)
@@ -292,8 +300,14 @@ async def _invidious_get_streams(video_id: str) -> Optional[dict]:
 
 async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict]:
     """Try a single Invidious instance."""
+    import time as _t
+    # Skip known-dead instances, but auto-recover after timeout
     if base_url in _dead_invidious:
-        return None  # Skip known-dead instances
+        if _t.time() - _dead_invidious[base_url] < _DEAD_INSTANCE_RECOVERY_SECONDS:
+            return None  # Still in cooldown
+        else:
+            del _dead_invidious[base_url]  # Recovery: give it another chance
+            LOG.info("Invidious instance %s recovered after cooldown", base_url)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -309,10 +323,10 @@ async def _try_invidious_instance(base_url: str, video_id: str) -> Optional[dict
                 else:
                     LOG.debug("Invidious %s returned HTTP %d for %s", base_url, resp.status, video_id)
                     if resp.status in (502, 503, 520, 521, 522, 523, 524):
-                        _dead_invidious.add(base_url)
+                        _dead_invidious[base_url] = _t.time()
                         LOG.info("Invidious instance %s marked dead (HTTP %d)", base_url, resp.status)
     except asyncio.TimeoutError:
-        _dead_invidious.add(base_url)
+        _dead_invidious[base_url] = _t.time()
         LOG.debug("Invidious %s timed out for %s — marked dead", base_url, video_id)
     except Exception as e:
         LOG.debug("Invidious %s failed for %s: %s", base_url, video_id, e)

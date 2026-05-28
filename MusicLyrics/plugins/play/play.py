@@ -50,6 +50,14 @@ from MusicLyrics.plugins.play.platforms.apple_music import (
     is_apple_music_url,
     get_apple_music_track,
 )
+from MusicLyrics.plugins.play.platforms.soundcloud import (
+    is_soundcloud_url,
+    search_soundcloud,
+    get_soundcloud_info,
+    download_soundcloud,
+    get_soundcloud_stream_url,
+    search_and_download_soundcloud,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -81,6 +89,8 @@ def _detect_platform(text: str) -> str:
         return "jiosaavn"
     if is_apple_music_url(text):
         return "apple_music"
+    if is_soundcloud_url(text):
+        return "soundcloud"
     if re.match(r"https?://", text):
         return "direct_url"
     return "query"
@@ -118,6 +128,16 @@ async def _get_audio_media(url: str) -> tuple[str, bool]:
         filepath_sd, _ = await search_and_download_audio(title)
         if filepath_sd and os.path.isfile(filepath_sd):
             return filepath_sd, False
+
+    # Try 4: SoundCloud as LAST RESORT fallback
+    if title and title not in ("YouTube Audio", "Unknown"):
+        LOG.info("All YouTube methods failed, trying SoundCloud fallback for: %s", title)
+        sc_path, sc_info = await search_and_download_soundcloud(title)
+        if sc_path:
+            if sc_info and sc_info.get("_is_stream_url"):
+                return sc_path, True
+            if os.path.isfile(sc_path):
+                return sc_path, False
 
     return "", False
 
@@ -159,9 +179,37 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             raise ValueError("Spotify link parse করা যায়নি।")
         yt = await search_youtube(track["query"])
         if not yt:
-            raise ValueError("YouTube-এ গানটি পাওয়া যায়নি।")
+            # Fallback: try SoundCloud search
+            LOG.info("Spotify -> YouTube search failed, trying SoundCloud for: %s", track["query"])
+            sc_path, sc_info = await search_and_download_soundcloud(track["query"])
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", track.get("title", "Unknown")),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", track.get("duration", 0)),
+                    "thumbnail": sc_info.get("thumbnail", track.get("thumbnail", "")),
+                    "channel": sc_info.get("channel", track.get("artist", "")),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
+            raise ValueError("YouTube ও SoundCloud কোথাও গানটি পাওয়া যায়নি।")
         media_path, is_stream = await _get_audio_media(yt["url"])
         if not media_path:
+            # Fallback: SoundCloud
+            LOG.info("Spotify -> YouTube audio failed, trying SoundCloud for: %s", track["query"])
+            sc_path, sc_info = await search_and_download_soundcloud(track["query"])
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", track.get("title", "Unknown")),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", track.get("duration", 0)),
+                    "thumbnail": sc_info.get("thumbnail", track.get("thumbnail", "")),
+                    "channel": sc_info.get("channel", track.get("artist", "")),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
             raise ValueError("Audio stream পাওয়া যায়নি।")
         info = {**yt, "platform": "spotify"}
         return info, media_path, is_stream
@@ -184,19 +232,32 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             return info, filepath, False
         # Fallback to YouTube
         yt = await search_youtube(f"{song['title']} {song.get('artist','')}")
-        if not yt:
-            raise ValueError("গানটি কোথাও পাওয়া যায়নি।")
-        media_path, is_stream = await _get_audio_media(yt["url"])
-        if not media_path:
-            raise ValueError("Audio stream পাওয়া যায়নি।")
-        info = {
-            "title": song["title"], "url": song["url"],
-            "duration": song["duration"],
-            "thumbnail": song.get("thumbnail", ""),
-            "channel": song.get("artist", ""),
-            "platform": "jiosaavn",
-        }
-        return info, media_path, is_stream
+        if yt:
+            media_path, is_stream = await _get_audio_media(yt["url"])
+            if media_path:
+                info = {
+                    "title": song["title"], "url": song["url"],
+                    "duration": song["duration"],
+                    "thumbnail": song.get("thumbnail", ""),
+                    "channel": song.get("artist", ""),
+                    "platform": "jiosaavn",
+                }
+                return info, media_path, is_stream
+        # Fallback to SoundCloud as LAST RESORT
+        LOG.info("JioSaavn -> YouTube all failed, trying SoundCloud for: %s", song["title"])
+        sc_query = f"{song['title']} {song.get('artist', '')}".strip()
+        sc_path, sc_info = await search_and_download_soundcloud(sc_query)
+        if sc_path and sc_info:
+            is_stream = bool(sc_info.get("_is_stream_url"))
+            info = {
+                "title": song["title"], "url": song["url"],
+                "duration": song["duration"],
+                "thumbnail": song.get("thumbnail", ""),
+                "channel": song.get("artist", ""),
+                "platform": "soundcloud",
+            }
+            return info, sc_path, is_stream
+        raise ValueError("গানটি কোথাও পাওয়া যায়নি।")
 
     # -- Apple Music
     if platform == "apple_music":
@@ -205,12 +266,48 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             raise ValueError("Apple Music link parse করা যায়নি।")
         yt = await search_youtube(track["query"])
         if not yt:
-            raise ValueError("YouTube-এ গানটি পাওয়া যায়নি।")
+            # Fallback: try SoundCloud search
+            LOG.info("Apple Music -> YouTube search failed, trying SoundCloud for: %s", track["query"])
+            sc_path, sc_info = await search_and_download_soundcloud(track["query"])
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", track.get("title", "Unknown")),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", 0),
+                    "thumbnail": sc_info.get("thumbnail", ""),
+                    "channel": sc_info.get("channel", track.get("artist", "")),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
+            raise ValueError("YouTube ও SoundCloud কোথাও গানটি পাওয়া যায়নি।")
         media_path, is_stream = await _get_audio_media(yt["url"])
         if not media_path:
             raise ValueError("Audio stream পাওয়া যায়নি।")
         info = {**yt, "platform": "apple_music"}
         return info, media_path, is_stream
+
+    # -- SoundCloud URL
+    if platform == "soundcloud":
+        sc_info = await get_soundcloud_info(query)
+        if not sc_info:
+            sc_info = {"title": "SoundCloud Audio", "url": query,
+                       "duration": 0, "thumbnail": "", "channel": "",
+                       "platform": "soundcloud"}
+        if sc_info.get("duration", 0) > Config.DURATION_LIMIT_MIN * 60 and sc_info["duration"] > 0:
+            raise ValueError(
+                f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, "
+                "play করা যাবে না।"
+            )
+        # Try downloading first
+        filepath = await download_soundcloud(query)
+        if filepath and os.path.isfile(filepath):
+            return sc_info, filepath, False
+        # Try stream URL
+        stream_url = await get_soundcloud_stream_url(query)
+        if stream_url:
+            return sc_info, stream_url, True
+        raise ValueError("SoundCloud থেকে audio পাওয়া যায়নি।")
 
     # -- Direct URL
     if platform == "direct_url":
@@ -231,6 +328,12 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         filepath, dl_info = await search_and_download_audio(query)
         if filepath and dl_info:
             return dl_info, filepath, False
+        # LAST RESORT: SoundCloud search+download
+        LOG.info("YouTube search+download failed, trying SoundCloud for: %s", query)
+        sc_path, sc_info = await search_and_download_soundcloud(query)
+        if sc_path and sc_info:
+            is_stream = bool(sc_info.get("_is_stream_url"))
+            return sc_info, sc_path, is_stream
         raise ValueError("কোনো result পাওয়া যায়নি। অন্য keyword দিয়ে চেষ্টা করুন।")
     if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
         raise ValueError(
@@ -245,6 +348,12 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             # Use search result info if available, otherwise use download info
             info = dl_info or yt
             return info, filepath, False
+        # LAST RESORT: SoundCloud fallback
+        LOG.info("All YouTube methods failed, trying SoundCloud for: %s", query)
+        sc_path, sc_info = await search_and_download_soundcloud(query)
+        if sc_path and sc_info:
+            is_stream = bool(sc_info.get("_is_stream_url"))
+            return sc_info, sc_path, is_stream
         raise ValueError("Audio stream পাওয়া যায়নি। আবার চেষ্টা করুন।")
     return yt, media_path, is_stream
 

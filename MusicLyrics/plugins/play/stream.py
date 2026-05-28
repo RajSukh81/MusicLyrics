@@ -386,6 +386,9 @@ async def _on_stream_end(client, update):
                 from MusicLyrics.plugins.play.platforms.youtube import (
                     get_audio_stream_url, get_video_stream_url, is_youtube_url
                 )
+                from MusicLyrics.plugins.play.platforms.soundcloud import (
+                    get_soundcloud_stream_url, is_soundcloud_url
+                )
                 if is_youtube_url(next_item.url):
                     if next_item.stream_type == "video":
                         new_url = await get_video_stream_url(next_item.url)
@@ -394,6 +397,11 @@ async def _on_stream_end(client, update):
                     if new_url:
                         next_item.media_path = new_url
                         LOG.info("Re-fetched stream URL for queued track: %s", next_item.title)
+                elif is_soundcloud_url(next_item.url):
+                    new_url = await get_soundcloud_stream_url(next_item.url)
+                    if new_url:
+                        next_item.media_path = new_url
+                        LOG.info("Re-fetched SoundCloud stream URL for: %s", next_item.title)
             except Exception:
                 LOG.warning("Failed to re-fetch stream URL for: %s", next_item.title)
 
