@@ -40,7 +40,10 @@ from MusicLyrics.plugins.play.platforms.spotify import (
     is_spotify_url,
     get_spotify_track,
 )
-from MusicLyrics.plugins.play.platforms.jiosaavn import is_jiosaavn_url
+from MusicLyrics.plugins.play.platforms.jiosaavn import (
+    is_jiosaavn_url,
+    get_jiosaavn_song,
+)
 from MusicLyrics.plugins.play.platforms.apple_music import (
     is_apple_music_url,
     get_apple_music_track,
@@ -104,6 +107,16 @@ async def _get_video_media(url: str) -> tuple[str, bool]:
         if filepath_sd and os.path.isfile(filepath_sd):
             return filepath_sd, False
 
+    # Try 4: SoundCloud as LAST RESORT fallback
+    if title and title not in ("YouTube Video", "Unknown"):
+        LOG.info("All video methods failed, trying SoundCloud fallback for: %s", title)
+        sc_path, sc_info = await search_and_download_soundcloud(title)
+        if sc_path:
+            if sc_info and sc_info.get("_is_stream_url"):
+                return sc_path, True
+            if os.path.isfile(sc_path):
+                return sc_path, False
+
     return "", False
 
 
@@ -158,6 +171,20 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("YouTube ও SoundCloud কোথাও video পাওয়া যায়নি।")
         media_path, is_stream = await _get_video_media(yt["url"])
         if not media_path:
+            # Fallback: SoundCloud
+            LOG.info("Spotify -> YouTube video download failed, trying SoundCloud for: %s", track["query"])
+            sc_path, sc_info = await search_and_download_soundcloud(track["query"])
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", track.get("title", "Unknown")),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", 0),
+                    "thumbnail": sc_info.get("thumbnail", ""),
+                    "channel": sc_info.get("channel", track.get("artist", "")),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
             raise ValueError("Video stream পাওয়া যায়নি।")
         return {**yt, "platform": "spotify"}, media_path, is_stream
 
@@ -185,6 +212,20 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("YouTube ও SoundCloud কোথাও video পাওয়া যায়নি।")
         media_path, is_stream = await _get_video_media(yt["url"])
         if not media_path:
+            # Fallback: SoundCloud
+            LOG.info("Apple Music -> YouTube video download failed, trying SoundCloud for: %s", track["query"])
+            sc_path, sc_info = await search_and_download_soundcloud(track["query"])
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", track.get("title", "Unknown")),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", 0),
+                    "thumbnail": sc_info.get("thumbnail", ""),
+                    "channel": sc_info.get("channel", track.get("artist", "")),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
             raise ValueError("Video stream পাওয়া যায়নি।")
         return {**yt, "platform": "apple_music"}, media_path, is_stream
 
@@ -203,13 +244,45 @@ async def _resolve_video(query: str, platform: str):
             return sc_info, stream_url, True
         raise ValueError("SoundCloud থেকে audio/video পাওয়া যায়নি।")
 
-    # JioSaavn — video not available, search YT
+    # JioSaavn — video not available, extract song info and search YT
     if platform == "jiosaavn":
-        yt = await search_youtube(query)
+        song = await get_jiosaavn_song(query)
+        search_query = query
+        if song:
+            search_query = f"{song['title']} {song.get('artist', '')}".strip()
+        yt = await search_youtube(search_query)
         if not yt:
-            raise ValueError("JioSaavn video সমর্থন করে না এবং YouTube-এও পাওয়া যায়নি।")
+            # Fallback: SoundCloud
+            LOG.info("JioSaavn -> YouTube video failed, trying SoundCloud for: %s", search_query)
+            sc_path, sc_info = await search_and_download_soundcloud(search_query)
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", song.get("title", "Unknown") if song else "Unknown"),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", 0),
+                    "thumbnail": sc_info.get("thumbnail", ""),
+                    "channel": sc_info.get("channel", song.get("artist", "") if song else ""),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
+            raise ValueError("JioSaavn video সমর্থন করে না এবং YouTube/SoundCloud-এও পাওয়া যায়নি।")
         media_path, is_stream = await _get_video_media(yt["url"])
         if not media_path:
+            # Fallback: SoundCloud
+            LOG.info("JioSaavn -> YouTube video download failed, trying SoundCloud for: %s", search_query)
+            sc_path, sc_info = await search_and_download_soundcloud(search_query)
+            if sc_path and sc_info:
+                is_stream = bool(sc_info.get("_is_stream_url"))
+                info = {
+                    "title": sc_info.get("title", song.get("title", "Unknown") if song else "Unknown"),
+                    "url": sc_info.get("url", query),
+                    "duration": sc_info.get("duration", 0),
+                    "thumbnail": sc_info.get("thumbnail", ""),
+                    "channel": sc_info.get("channel", song.get("artist", "") if song else ""),
+                    "platform": "soundcloud",
+                }
+                return info, sc_path, is_stream
             raise ValueError("Video stream পাওয়া যায়নি।")
         return yt, media_path, is_stream
 

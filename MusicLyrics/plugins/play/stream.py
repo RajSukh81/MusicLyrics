@@ -22,6 +22,13 @@ from MusicLyrics.plugins.play.queue import (
 )
 from MusicLyrics.utils.downloader import cleanup
 
+# SoundCloud fallback — ultimate last resort when all other methods fail
+from MusicLyrics.plugins.play.platforms.soundcloud import (
+    search_and_download_soundcloud,
+    get_soundcloud_stream_url,
+    is_soundcloud_url,
+)
+
 LOG = logging.getLogger(__name__)
 
 # Track active chats so we know whether to join or change stream
@@ -78,14 +85,52 @@ def _is_url(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
 
+async def _check_stream_url(url: str) -> bool:
+    """Quick HEAD/GET check to see if a stream URL is still valid.
+
+    Returns True if URL is reachable (2xx/3xx), False otherwise.
+    This prevents passing expired/dead URLs to py-tgcalls/ffprobe
+    which causes JSONDecodeError crashes.
+    """
+    if not _is_url(url):
+        return True  # Not a URL, skip check
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # Try HEAD first (faster), then GET if HEAD fails
+            for method in [session.head, session.get]:
+                try:
+                    async with method(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=5, connect=3),
+                        allow_redirects=True,
+                    ) as resp:
+                        if resp.status < 400:
+                            return True
+                        if resp.status in (403, 410, 451):
+                            LOG.warning("Stream URL expired/blocked (HTTP %d): %s", resp.status, url[:80])
+                            return False
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False  # Can't verify — assume dead
+
+
 def _validate_media(media_path: str) -> None:
     """Validate media path -- file must exist or be a URL."""
     if not media_path:
         raise FileNotFoundError("No media path provided.")
     if _is_url(media_path):
-        return  # URLs are always accepted
+        # Basic URL sanity checks
+        if len(media_path) < 10:
+            raise FileNotFoundError(f"Invalid media URL: {media_path}")
+        return  # URLs are accepted
     if not os.path.isfile(media_path):
         raise FileNotFoundError(f"File not found: {media_path}")
+    # Reject empty files (corrupted downloads)
+    if os.path.getsize(media_path) < 1000:
+        raise FileNotFoundError(f"File too small (likely corrupted): {media_path}")
 
 
 def _make_audio_stream(media_path: str):
@@ -186,8 +231,41 @@ async def stream_audio(
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
     _validate_media(media_path)
+
+    # Pre-check stream URL validity to prevent ffprobe/JSONDecodeError crashes
+    if _is_url(media_path):
+        url_ok = await _check_stream_url(media_path)
+        if not url_ok:
+            LOG.warning("Stream URL pre-check failed in %s — going directly to fallback", chat_id)
+            # Directly attempt download instead of passing dead URL to py-tgcalls
+            try:
+                from MusicLyrics.plugins.play.platforms.youtube import download_audio, search_and_download_audio
+                local_path = None
+                if title:
+                    local_path, _ = await search_and_download_audio(title)
+                if local_path and os.path.isfile(str(local_path)):
+                    audio = _make_audio_stream(local_path)
+                    await _do_play(chat_id, audio)
+                    _active_chats.add(chat_id)
+                    LOG.info("Streaming audio (URL pre-check recovery) in %s: %s", chat_id, title)
+                    return
+            except Exception:
+                LOG.debug("URL pre-check recovery download failed for %s", chat_id)
+            # Try SoundCloud
+            if title:
+                try:
+                    sc_path, sc_info = await search_and_download_soundcloud(title)
+                    if sc_path and (os.path.isfile(str(sc_path)) or (sc_info and sc_info.get("_is_stream_url"))):
+                        audio = _make_audio_stream(sc_path)
+                        await _do_play(chat_id, audio)
+                        _active_chats.add(chat_id)
+                        LOG.info("Streaming audio (SoundCloud pre-check recovery) in %s: %s", chat_id, title)
+                        return
+                except Exception:
+                    pass
+            raise FileNotFoundError(f"Stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
+
     try:
-        audio = _make_audio_stream(media_path)
         await _do_play(chat_id, audio)
         _active_chats.add(chat_id)
         LOG.info("Streaming audio in %s: %s (%s)",
@@ -217,6 +295,29 @@ async def stream_audio(
             except Exception as dl_exc:
                 LOG.exception("Download fallback also failed in %s: %s",
                              chat_id, dl_exc)
+
+            # LAST RESORT: SoundCloud fallback when all YouTube methods fail
+            if title:
+                try:
+                    LOG.info("All YouTube methods failed, trying SoundCloud fallback for: %s", title)
+                    sc_path, sc_info = await search_and_download_soundcloud(title)
+                    if sc_path:
+                        if sc_info and sc_info.get("_is_stream_url"):
+                            audio = _make_audio_stream(sc_path)
+                        elif os.path.isfile(str(sc_path)):
+                            audio = _make_audio_stream(sc_path)
+                        else:
+                            audio = None
+                        if audio:
+                            await _do_play(chat_id, audio)
+                            _active_chats.add(chat_id)
+                            LOG.info("Streaming audio (SoundCloud fallback) in %s: %s (%s)",
+                                     chat_id, title, str(sc_path)[:100])
+                            return
+                except Exception as sc_exc:
+                    LOG.exception("SoundCloud fallback also failed in %s: %s",
+                                 chat_id, sc_exc)
+
         LOG.exception("Failed to stream audio in %s: %s", chat_id, exc)
         raise
 
@@ -238,8 +339,40 @@ async def stream_video(
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
     _validate_media(media_path)
+
+    # Pre-check stream URL validity to prevent ffprobe/JSONDecodeError crashes
+    if _is_url(media_path):
+        url_ok = await _check_stream_url(media_path)
+        if not url_ok:
+            LOG.warning("Video stream URL pre-check failed in %s — going directly to fallback", chat_id)
+            try:
+                from MusicLyrics.plugins.play.platforms.youtube import download_video, search_and_download_video
+                local_path = None
+                if title:
+                    local_path, _ = await search_and_download_video(title)
+                if local_path and os.path.isfile(str(local_path)):
+                    stream = _make_video_stream(local_path)
+                    await _do_play(chat_id, stream)
+                    _active_chats.add(chat_id)
+                    LOG.info("Streaming video (URL pre-check recovery) in %s: %s", chat_id, title)
+                    return
+            except Exception:
+                LOG.debug("Video URL pre-check recovery download failed for %s", chat_id)
+            # Try SoundCloud
+            if title:
+                try:
+                    sc_path, sc_info = await search_and_download_soundcloud(title)
+                    if sc_path and (os.path.isfile(str(sc_path)) or (sc_info and sc_info.get("_is_stream_url"))):
+                        stream = _make_audio_stream(sc_path)
+                        await _do_play(chat_id, stream)
+                        _active_chats.add(chat_id)
+                        LOG.info("Streaming audio via SoundCloud (video pre-check recovery) in %s: %s", chat_id, title)
+                        return
+                except Exception:
+                    pass
+            raise FileNotFoundError(f"Video stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
+
     try:
-        stream = _make_video_stream(media_path)
         await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
         LOG.info("Streaming video in %s: %s (%s)",
@@ -269,6 +402,29 @@ async def stream_video(
             except Exception as dl_exc:
                 LOG.exception("Video download fallback also failed in %s: %s",
                              chat_id, dl_exc)
+
+            # LAST RESORT: SoundCloud fallback for video too (plays audio)
+            if title:
+                try:
+                    LOG.info("All video methods failed, trying SoundCloud fallback for: %s", title)
+                    sc_path, sc_info = await search_and_download_soundcloud(title)
+                    if sc_path:
+                        if sc_info and sc_info.get("_is_stream_url"):
+                            stream = _make_audio_stream(sc_path)
+                        elif os.path.isfile(str(sc_path)):
+                            stream = _make_audio_stream(sc_path)
+                        else:
+                            stream = None
+                        if stream:
+                            await _do_play(chat_id, stream)
+                            _active_chats.add(chat_id)
+                            LOG.info("Streaming audio via SoundCloud (video fallback) in %s: %s (%s)",
+                                     chat_id, title, str(sc_path)[:100])
+                            return
+                except Exception as sc_exc:
+                    LOG.exception("SoundCloud video fallback also failed in %s: %s",
+                                 chat_id, sc_exc)
+
         LOG.exception("Failed to stream video in %s: %s", chat_id, exc)
         raise
 
@@ -386,9 +542,6 @@ async def _on_stream_end(client, update):
                 from MusicLyrics.plugins.play.platforms.youtube import (
                     get_audio_stream_url, get_video_stream_url, is_youtube_url
                 )
-                from MusicLyrics.plugins.play.platforms.soundcloud import (
-                    get_soundcloud_stream_url, is_soundcloud_url
-                )
                 if is_youtube_url(next_item.url):
                     if next_item.stream_type == "video":
                         new_url = await get_video_stream_url(next_item.url)
@@ -403,7 +556,7 @@ async def _on_stream_end(client, update):
                         next_item.media_path = new_url
                         LOG.info("Re-fetched SoundCloud stream URL for: %s", next_item.title)
             except Exception:
-                LOG.warning("Failed to re-fetch stream URL for: %s", next_item.title)
+                LOG.warning("Failed to re-fetch stream URL for: %s — will try playing with existing URL", next_item.title)
 
         if next_item.stream_type == "video":
             await stream_video(
