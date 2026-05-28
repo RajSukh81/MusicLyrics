@@ -19,6 +19,8 @@ async def paste_cmd(_, message: Message):
     elif message.reply_to_message:
         if message.reply_to_message.document:
             doc = await message.reply_to_message.download()
+            if not doc:
+                return await message.reply_text("❌ ফাইল ডাউনলোড ব্যর্থ। / File download failed.")
             try:
                 with open(doc, "r", encoding="utf-8", errors="ignore") as f:
                     text = f.read()

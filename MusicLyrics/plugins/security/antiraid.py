@@ -103,7 +103,7 @@ async def antiraid_cmd(client: Client, message: Message):
         await message.reply_text("❌ ভুল কমান্ড। `/antiraid` দেখো।")
 
 
-@bot.on_message(filters.new_chat_members, group=5)
+@bot.on_message(filters.new_chat_members, group=4)
 async def _raid_watcher(client: Client, message: Message):
     """Monitor new member joins for raid patterns."""
     chat_id = message.chat.id
@@ -159,6 +159,7 @@ async def _raid_watcher(client: Client, message: Message):
                 LOG.debug("Raid action failed for %s: %s", user_id, e)
 
         _raid_joiners[chat_id].clear()
+        await message.stop_propagation()
 
     # Auto-deactivate raid mode after lockdown duration
     if settings["raid_active"]:

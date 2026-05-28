@@ -161,8 +161,16 @@ async def unmute_cmd(client: Client, message: Message):
             target_id,
             ChatPermissions(
                 can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_stickers=True,
+                can_send_animations=True,
+                can_send_games=True,
+                can_use_inline_bots=True,
                 can_add_web_page_previews=True,
             ),
         )
