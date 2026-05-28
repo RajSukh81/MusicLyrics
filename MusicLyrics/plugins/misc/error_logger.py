@@ -129,7 +129,7 @@ async def logs_cmd(client, message: Message):
     import os
     log_file = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        os.pardir, os.pardir, "logs", "musiclyrics.log"
+        os.pardir, os.pardir, os.pardir, "logs", "musiclyrics.log"
     )
     log_file = os.path.normpath(log_file)
 

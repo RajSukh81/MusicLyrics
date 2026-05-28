@@ -39,11 +39,16 @@ def _generate_license_key(bot_token: str) -> str:
 def _verify_license():
     """Verify LICENSE file + LICENSE_KEY environment variable."""
 
+    # Use print + sys.stderr because logging may not be configured yet
+    def _err(msg):
+        print(msg, file=sys.stderr, flush=True)
+        print(msg, flush=True)
+
     # ── Step 1: Check LICENSE file ──
     license_path = Path(__file__).parent.parent / "LICENSE"
 
     if not license_path.exists():
-        print(
+        _err(
             "\n"
             "╔══════════════════════════════════════════════════════════════╗\n"
             "║  ❌  LICENSE FILE MISSING!                                  ║\n"
@@ -62,7 +67,7 @@ def _verify_license():
     try:
         content = license_path.read_text(encoding="utf-8")
     except Exception:
-        print("❌ Cannot read LICENSE file. Aborting.")
+        _err("❌ Cannot read LICENSE file. Aborting.")
         sys.exit(1)
 
     required_markers = [
@@ -74,7 +79,7 @@ def _verify_license():
     ]
     for marker in required_markers:
         if marker not in content:
-            print(
+            _err(
                 f"\n❌ LICENSE file has been tampered with!\n"
                 f"   Missing required text: '{marker}'\n"
                 f"   Owner: {_LICENSE_OWNER}\n"
@@ -83,14 +88,14 @@ def _verify_license():
             )
             sys.exit(1)
 
-    print(f"✅ License file OK — {_LICENSE_OWNER} Proprietary License")
+    print(f"✅ License file OK — {_LICENSE_OWNER} Proprietary License", flush=True)
 
     # ── Step 2: Validate LICENSE_KEY from environment variable ──
     license_key = os.environ.get("LICENSE_KEY", "").strip()
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
 
     if not license_key:
-        print(
+        _err(
             "\n"
             "╔══════════════════════════════════════════════════════════════╗\n"
             "║  ❌  LICENSE_KEY NOT SET!                                   ║\n"
@@ -110,14 +115,14 @@ def _verify_license():
         sys.exit(1)
 
     if not bot_token:
-        print("❌ BOT_TOKEN is not set. Cannot validate license.")
+        _err("❌ BOT_TOKEN is not set. Cannot validate license.")
         sys.exit(1)
 
     # Generate expected key from bot_token and compare
     expected_key = _generate_license_key(bot_token)
 
     if not hmac.compare_digest(license_key, expected_key):
-        print(
+        _err(
             "\n"
             "╔══════════════════════════════════════════════════════════════╗\n"
             "║  ❌  INVALID LICENSE_KEY!                                   ║\n"
@@ -138,7 +143,8 @@ def _verify_license():
     print(
         f"✅ License key validated — {license_key}\n"
         f"   Authorized by: {_LICENSE_OWNER}\n"
-        f"   Source: {_LICENSE_REPO}"
+        f"   Source: {_LICENSE_REPO}",
+        flush=True,
     )
 
 
@@ -194,9 +200,17 @@ from config import Config
 from MusicLyrics import bot, userbot, pytgcalls, __version__
 from MusicLyrics.bot import get_bot_info
 
+_log_dir = Path(__file__).parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_log_file = _log_dir / "musiclyrics.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_log_file, encoding="utf-8"),
+    ],
 )
 LOG = logging.getLogger("MusicLyrics")
 
@@ -496,8 +510,93 @@ async def _check_bot_info():
         LOG.warning("Could not check webhook info: %s", e)
 
 
+async def _check_mongo():
+    """Check MongoDB connectivity and log the result."""
+    try:
+        from MusicLyrics.mongo.db import _client
+        info = await _client.server_info()
+        LOG.info("MongoDB connected — version %s", info.get("version", "?"))
+        return True
+    except Exception as e:
+        LOG.error(
+            "MongoDB UNREACHABLE: %s\n"
+            "  MONGO_URL: %s\n"
+            "  Features needing DB (filters, warns, notes, sudo, welcome) "
+            "will NOT work until MongoDB is available.",
+            e,
+            Config.MONGO_URL[:30] + "..." if len(Config.MONGO_URL) > 30 else Config.MONGO_URL,
+        )
+        return False
+
+
+def _log_config_summary():
+    """Log all config vars status so deployment issues are obvious."""
+    LOG.info("=== CONFIG SUMMARY ===")
+    LOG.info("API_ID:            %s", "SET" if Config.API_ID else "MISSING")
+    LOG.info("API_HASH:          %s", "SET" if Config.API_HASH else "MISSING")
+    LOG.info("BOT_TOKEN:         %s", "SET (ends ...%s)" % Config.BOT_TOKEN[-6:] if Config.BOT_TOKEN else "MISSING")
+    LOG.info("STRING_SESSION:    %s", "SET" if Config.STRING_SESSION else "NOT SET (music streaming disabled)")
+    LOG.info("MONGO_URL:         %s", "SET" if Config.MONGO_URL != "mongodb://localhost:27017/musiclyrics" else "DEFAULT (localhost)")
+    LOG.info("OWNER_ID:          %s", Config.OWNER_ID or "NOT SET")
+    LOG.info("SUDO_USERS:        %s", Config.SUDO_USERS or "NONE")
+    LOG.info("LOG_GROUP_ID:      %s", Config.LOG_GROUP_ID or "NOT SET")
+    LOG.info("YOUTUBE_PROXY:     %s", "SET" if Config.YOUTUBE_PROXY else "NOT SET")
+    LOG.info("YOUTUBE_PROXIES:   %d proxies", len(Config.YOUTUBE_PROXIES))
+    LOG.info("SPOTIFY:           %s", "SET" if Config.SPOTIFY_CLIENT_ID else "NOT SET")
+    LOG.info("AI_API_KEY:        %s", "SET" if Config.AI_API_KEY else "NOT SET")
+    LOG.info("======================")
+
+
+def _install_global_error_handler():
+    """Install a global error handler on the bot's dispatcher.
+
+    Pyrogram silently swallows exceptions in handlers. This decorator
+    wraps every registered handler so unhandled errors are logged to
+    console, log file, AND sent to the owner/log group.
+    """
+    from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+
+    for group_id, handlers in bot.dispatcher.groups.items():
+        for i, handler in enumerate(handlers):
+            original_cb = handler.callback
+
+            async def _wrapped(client, update, _cb=original_cb, _gid=group_id):
+                try:
+                    return await _cb(client, update)
+                except FloodWait as e:
+                    LOG.warning("FloodWait %ds in handler %s (group %d)",
+                                e.value, _cb.__name__, _gid)
+                    await asyncio.sleep(e.value + 1)
+                except Exception as exc:
+                    LOG.exception(
+                        "UNHANDLED ERROR in handler '%s' (group %d): %s",
+                        _cb.__name__, _gid, exc,
+                    )
+                    # Notify owner about the crash
+                    try:
+                        import traceback
+                        tb = traceback.format_exc()[-1200:]
+                        err_text = (
+                            f"**Handler Crash Report**\n\n"
+                            f"**Handler:** `{_cb.__name__}` (group {_gid})\n"
+                            f"**Error:** `{str(exc)[:200]}`\n\n"
+                            f"```\n{tb}\n```"
+                        )
+                        log_to_group(err_text)
+                    except Exception:
+                        pass
+
+            handler.callback = _wrapped
+
+    LOG.info("Global error handler installed on all %d handler groups.",
+             len(bot.dispatcher.groups))
+
+
 async def main():
     """Start the bot, userbot, and py-tgcalls, then idle."""
+
+    # Log config summary first so missing vars are immediately visible
+    _log_config_summary()
 
     # CRITICAL: Delete webhook FIRST — if a webhook is set, Telegram sends
     # all updates there and long-polling receives NOTHING.
@@ -506,6 +605,10 @@ async def main():
     await _delete_webhook()
     # Wait a moment for Telegram to process the webhook deletion
     await asyncio.sleep(2)
+
+    # Step 1.5: Check MongoDB connectivity
+    LOG.info("Step 1.5: Checking MongoDB connectivity...")
+    await _check_mongo()
 
     LOG.info("Step 2: Loading plugins...")
     result = _load_plugins()
@@ -557,6 +660,10 @@ async def main():
     LOG.info("Step 5: Setting up event logging and catch-all handler...")
     _setup_event_logging()
     _setup_catchall_handler()
+
+    # Install global error handler AFTER all handlers are registered
+    LOG.info("Step 6: Installing global error handler...")
+    _install_global_error_handler()
 
     await _send_startup_message()
 
