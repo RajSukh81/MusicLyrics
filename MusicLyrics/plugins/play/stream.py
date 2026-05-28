@@ -21,6 +21,7 @@ from MusicLyrics.plugins.play.queue import (
     format_duration,
 )
 from MusicLyrics.utils.downloader import cleanup
+from MusicLyrics.utils.autodelete import auto_delete_service, auto_delete_playing
 
 # SoundCloud fallback — ultimate last resort when all other methods fail
 from MusicLyrics.plugins.play.platforms.soundcloud import (
@@ -526,12 +527,13 @@ async def _on_stream_end(client, update):
     if next_item is None:
         await leave_voice_chat(chat_id)
         try:
-            await bot.send_message(
+            finish_msg = await bot.send_message(
                 chat_id,
                 "**Queue finished!**\n"
                 "Leaving voice chat.\n\n"
                 "Use `/play` to play again.",
             )
+            await auto_delete_service(finish_msg)
         except Exception:
             pass
         return
@@ -572,13 +574,14 @@ async def _on_stream_end(client, update):
             )
 
         dur = format_duration(next_item.duration)
-        await bot.send_message(
+        np_msg = await bot.send_message(
             chat_id,
             f"**Now Playing**\n\n"
             f"**Title:** {next_item.title}\n"
             f"**Duration:** {dur}\n"
             f"**Requested by:** {next_item.requester}",
         )
+        await auto_delete_playing(np_msg)
     except Exception:
         LOG.exception("Failed to play next in queue for %s", chat_id)
         await leave_voice_chat(chat_id)

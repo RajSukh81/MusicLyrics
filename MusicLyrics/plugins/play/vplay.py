@@ -56,6 +56,11 @@ from MusicLyrics.plugins.play.platforms.soundcloud import (
     search_and_download_soundcloud,
 )
 from MusicLyrics.plugins.play.play import _detect_platform
+from MusicLyrics.utils.autodelete import (
+    auto_delete_service,
+    auto_delete_playing,
+    auto_delete_cmd,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -347,12 +352,16 @@ async def vplay_command(client: Client, message: Message):
         query = message.reply_to_message.text
 
     if not query:
-        await message.reply_text(
+        usage_msg = await message.reply_text(
             "**Usage:** `/vplay <song name or URL>`\n\n"
             "Video সহ voice chat-এ stream করবে।\n\n"
             "Example: `/vplay Arijit Singh live`"
         )
+        await auto_delete_service(message, usage_msg)
         return
+
+    # Auto-delete user's command message
+    await auto_delete_cmd(message)
 
     status_msg = await message.reply_text(
         f"🎬 **Video খুঁজছি:** `{query[:80]}`\n\nঅপেক্ষা করুন..."
@@ -364,6 +373,7 @@ async def vplay_command(client: Client, message: Message):
         info, media_path, is_stream = await _resolve_video(query, platform)
     except ValueError as exc:
         await status_msg.edit_text(f"❌ **Error:** {exc}")
+        await auto_delete_service(status_msg)
         return
     except Exception as exc:
         LOG.exception("Unexpected error in /vplay for %s", chat_id)
@@ -371,6 +381,7 @@ async def vplay_command(client: Client, message: Message):
             f"❌ কিছু একটা সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।\n"
             f"**Details:** `{type(exc).__name__}: {str(exc)[:200]}`"
         )
+        await auto_delete_service(status_msg)
         return
 
     title = info.get("title", "Unknown")
@@ -403,6 +414,7 @@ async def vplay_command(client: Client, message: Message):
             f"**Requested by:** {requester}",
             reply_markup=_vcontrol_keyboard(),
         )
+        await auto_delete_playing(status_msg)
         return
 
     try:
@@ -417,12 +429,14 @@ async def vplay_command(client: Client, message: Message):
             "❌ ভিডিও ফাইল/URL পাওয়া যায়নি।\n"
             "আবার `/vplay` দিয়ে চেষ্টা করুন।"
         )
+        await auto_delete_service(status_msg)
         return
     except RuntimeError as exc:
         await status_msg.edit_text(
             f"❌ {exc}\n\n"
             "STRING_SESSION সেট করা আছে কিনা চেক করুন।"
         )
+        await auto_delete_service(status_msg)
         return
     except Exception as exc:
         LOG.exception("Video stream start failed in %s", chat_id)
@@ -432,6 +446,7 @@ async def vplay_command(client: Client, message: Message):
             "userbot-কে admin বানানো হয়েছে।\n\n"
             f"**Error:** `{type(exc).__name__}: {str(exc)[:150]}`"
         )
+        await auto_delete_service(status_msg)
         return
 
     dur = format_duration(duration)
@@ -446,13 +461,16 @@ async def vplay_command(client: Client, message: Message):
     try:
         if thumbnail:
             await status_msg.delete()
-            await bot.send_photo(
+            now_playing_msg = await bot.send_photo(
                 chat_id,
                 photo=thumbnail,
                 caption=text,
                 reply_markup=_vcontrol_keyboard(),
             )
+            await auto_delete_playing(now_playing_msg)
         else:
             await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
+            await auto_delete_playing(status_msg)
     except Exception:
         await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
+        await auto_delete_playing(status_msg)

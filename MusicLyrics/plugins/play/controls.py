@@ -34,6 +34,11 @@ from MusicLyrics.plugins.play.stream import (
     stream_video,
     is_active,
 )
+from MusicLyrics.utils.autodelete import (
+    auto_delete_service,
+    auto_delete_playing,
+    auto_delete_cmd,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -60,13 +65,15 @@ def _control_keyboard() -> InlineKeyboardMarkup:
 async def pause_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
     ok = await pause_stream(chat_id)
     if ok:
-        await message.reply_text("⏸ **Paused!**\nResume করতে `/resume` দিন।")
+        reply = await message.reply_text("⏸ **Paused!**\nResume করতে `/resume` দিন।")
     else:
-        await message.reply_text("❌ Pause করা যায়নি।")
+        reply = await message.reply_text("❌ Pause করা যায়নি।")
+    await auto_delete_service(message, reply)
 
 
 # ── /resume ──────────────────────────────────────────────────────────────────
@@ -75,13 +82,15 @@ async def pause_cmd(client: Client, message: Message):
 async def resume_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
     ok = await resume_stream(chat_id)
     if ok:
-        await message.reply_text("▶️ **Resumed!**")
+        reply = await message.reply_text("▶️ **Resumed!**")
     else:
-        await message.reply_text("❌ Resume করা যায়নি।")
+        reply = await message.reply_text("❌ Resume করা যায়নি।")
+    await auto_delete_service(message, reply)
 
 
 # ── /skip | /next ────────────────────────────────────────────────────────────
@@ -90,13 +99,15 @@ async def resume_cmd(client: Client, message: Message):
 async def skip_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
 
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
-        await message.reply_text("⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।")
+        reply = await message.reply_text("⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।")
+        await auto_delete_service(message, reply)
         return
 
     try:
@@ -107,16 +118,18 @@ async def skip_cmd(client: Client, message: Message):
             await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
         dur = format_duration(next_item.duration)
-        await message.reply_text(
+        reply = await message.reply_text(
             f"⏭ **Skipped!**\n\n"
             f"**▶️ Now Playing:** {next_item.title}\n"
             f"**⏱ Duration:** {dur}\n"
             f"**👤 Requested by:** {next_item.requester}",
             reply_markup=_control_keyboard(),
         )
+        await auto_delete_playing(message, reply)
     except Exception:
         LOG.exception("Skip failed in %s", chat_id)
-        await message.reply_text("❌ পরের গানে যেতে সমস্যা হয়েছে।")
+        reply = await message.reply_text("❌ পরের গানে যেতে সমস্যা হয়েছে।")
+        await auto_delete_service(message, reply)
 
 
 # ── /stop | /end ─────────────────────────────────────────────────────────────
@@ -125,13 +138,15 @@ async def skip_cmd(client: Client, message: Message):
 async def stop_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
     await leave_voice_chat(chat_id)
-    await message.reply_text(
+    reply = await message.reply_text(
         "⏹ **Stopped!**\n"
         "Queue clear করে voice chat থেকে বের হয়ে গেছি।"
     )
+    await auto_delete_service(message, reply)
 
 
 # ── /seek <seconds> ──────────────────────────────────────────────────────────
@@ -140,23 +155,27 @@ async def stop_cmd(client: Client, message: Message):
 async def seek_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
     if len(message.command) < 2:
-        await message.reply_text("**Usage:** `/seek <seconds>`")
+        reply = await message.reply_text("**Usage:** `/seek <seconds>`")
+        await auto_delete_service(message, reply)
         return
     try:
         seconds = int(message.command[1])
     except ValueError:
-        await message.reply_text("❌ সঠিক সংখ্যা দিন। Example: `/seek 30`")
+        reply = await message.reply_text("❌ সঠিক সংখ্যা দিন। Example: `/seek 30`")
+        await auto_delete_service(message, reply)
         return
     ok = await seek_stream(chat_id, seconds)
     if ok:
-        await message.reply_text(f"⏩ **{seconds}s** এ seek করা হয়েছে।")
+        reply = await message.reply_text(f"⏩ **{seconds}s** এ seek করা হয়েছে।")
     else:
-        await message.reply_text(
+        reply = await message.reply_text(
             "❌ Seek এখনো এই version-এ fully supported নয়।"
         )
+    await auto_delete_service(message, reply)
 
 
 # ── /volume <1-200> ──────────────────────────────────────────────────────────
@@ -165,24 +184,29 @@ async def seek_cmd(client: Client, message: Message):
 async def volume_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     if not is_active(chat_id):
-        await message.reply_text("❌ কিছু চলছে না এখন।")
+        reply = await message.reply_text("❌ কিছু চলছে না এখন।")
+        await auto_delete_service(message, reply)
         return
     if len(message.command) < 2:
-        await message.reply_text("**Usage:** `/volume <1-200>`")
+        reply = await message.reply_text("**Usage:** `/volume <1-200>`")
+        await auto_delete_service(message, reply)
         return
     try:
         vol = int(message.command[1])
     except ValueError:
-        await message.reply_text("❌ সঠিক সংখ্যা দিন (1-200)।")
+        reply = await message.reply_text("❌ সঠিক সংখ্যা দিন (1-200)।")
+        await auto_delete_service(message, reply)
         return
     if not 1 <= vol <= 200:
-        await message.reply_text("❌ Volume 1 থেকে 200 এর মধ্যে হতে হবে।")
+        reply = await message.reply_text("❌ Volume 1 থেকে 200 এর মধ্যে হতে হবে।")
+        await auto_delete_service(message, reply)
         return
     ok = await set_volume(chat_id, vol)
     if ok:
-        await message.reply_text(f"🔊 Volume **{vol}%** সেট হয়েছে।")
+        reply = await message.reply_text(f"🔊 Volume **{vol}%** সেট হয়েছে।")
     else:
-        await message.reply_text("❌ Volume পরিবর্তন করা যায়নি।")
+        reply = await message.reply_text("❌ Volume পরিবর্তন করা যায়নি।")
+    await auto_delete_service(message, reply)
 
 
 # ── /queue ───────────────────────────────────────────────────────────────────
@@ -192,7 +216,8 @@ async def queue_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     items = await get_queue(chat_id)
     if not items:
-        await message.reply_text("📜 Queue খালি আছে।")
+        reply = await message.reply_text("📜 Queue খালি আছে।")
+        await auto_delete_service(message, reply)
         return
     cq = await get_chat_queue(chat_id)
     lines = ["**📜 Current Queue:**\n"]
@@ -203,7 +228,8 @@ async def queue_cmd(client: Client, message: Message):
         lines.append(f"{marker} {kind} **{item.title}** [{dur}] — {item.requester}")
     loop_status = "🔁 Loop: ON" if cq.loop_mode else "🔁 Loop: OFF"
     lines.append(f"\n{loop_status}")
-    await message.reply_text("\n".join(lines))
+    reply = await message.reply_text("\n".join(lines))
+    await auto_delete_playing(message, reply)
 
 
 # ── /nowplaying | /np ────────────────────────────────────────────────────────
@@ -213,7 +239,8 @@ async def nowplaying_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     current = await get_current(chat_id)
     if not current:
-        await message.reply_text("❌ এখন কিছু চলছে না।")
+        reply = await message.reply_text("❌ এখন কিছু চলছে না।")
+        await auto_delete_service(message, reply)
         return
     dur = format_duration(current.duration)
     kind = "🎬 Video" if current.stream_type == "video" else "🎵 Audio"
@@ -224,12 +251,13 @@ async def nowplaying_cmd(client: Client, message: Message):
         f"**👤 Requested by:** {current.requester}"
     )
     if current.thumbnail:
-        await bot.send_photo(
+        reply = await bot.send_photo(
             chat_id, photo=current.thumbnail,
             caption=text, reply_markup=_control_keyboard(),
         )
     else:
-        await message.reply_text(text, reply_markup=_control_keyboard())
+        reply = await message.reply_text(text, reply_markup=_control_keyboard())
+    await auto_delete_playing(message, reply)
 
 
 # ── /loop ────────────────────────────────────────────────────────────────────
@@ -239,9 +267,10 @@ async def loop_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     state = await toggle_loop(chat_id)
     if state:
-        await message.reply_text("🔁 **Loop ON** — বর্তমান গান বারবার চলবে।")
+        reply = await message.reply_text("🔁 **Loop ON** — বর্তমান গান বারবার চলবে।")
     else:
-        await message.reply_text("🔁 **Loop OFF** — Queue স্বাভাবিকভাবে চলবে।")
+        reply = await message.reply_text("🔁 **Loop OFF** — Queue স্বাভাবিকভাবে চলবে।")
+    await auto_delete_service(message, reply)
 
 
 # ── /shuffle ─────────────────────────────────────────────────────────────────
@@ -251,10 +280,12 @@ async def shuffle_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     items = await get_queue(chat_id)
     if len(items) < 2:
-        await message.reply_text("❌ Shuffle করার জন্য queue-তে কমপক্ষে ২টা গান থাকা দরকার।")
+        reply = await message.reply_text("❌ Shuffle করার জন্য queue-তে কমপক্ষে ২টা গান থাকা দরকার।")
+        await auto_delete_service(message, reply)
         return
     await shuffle_queue(chat_id)
-    await message.reply_text("🔀 **Queue shuffle হয়ে গেছে!**")
+    reply = await message.reply_text("🔀 **Queue shuffle হয়ে গেছে!**")
+    await auto_delete_service(message, reply)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -292,9 +323,10 @@ async def cb_skip(client: Client, callback: CallbackQuery):
     if next_item is None:
         await leave_voice_chat(chat_id)
         await callback.answer("Queue শেষ!")
-        await callback.message.reply_text(
+        reply = await callback.message.reply_text(
             "⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।"
         )
+        await auto_delete_service(reply)
         return
 
     try:
@@ -306,12 +338,13 @@ async def cb_skip(client: Client, callback: CallbackQuery):
                                title=next_item.title)
         await callback.answer(f"⏭ {next_item.title[:30]}")
         dur = format_duration(next_item.duration)
-        await callback.message.reply_text(
+        reply = await callback.message.reply_text(
             f"⏭ **Skipped!**\n\n"
             f"**▶️ Now Playing:** {next_item.title}\n"
             f"**⏱ Duration:** {dur}",
             reply_markup=_control_keyboard(),
         )
+        await auto_delete_playing(reply)
     except Exception:
         await callback.answer("Skip failed!", show_alert=True)
 
@@ -324,9 +357,10 @@ async def cb_stop(client: Client, callback: CallbackQuery):
         return
     await leave_voice_chat(chat_id)
     await callback.answer("⏹ Stopped")
-    await callback.message.reply_text(
+    reply = await callback.message.reply_text(
         "⏹ **Stopped!** Queue clear হয়ে গেছে।"
     )
+    await auto_delete_service(reply)
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_queue$"))
