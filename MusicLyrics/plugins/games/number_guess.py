@@ -9,7 +9,7 @@ from pyrogram.types import Message
 from MusicLyrics.bot import bot
 
 try:
-    from MusicLyrics.mongo.games_db import save_game_score as update_score
+    from MusicLyrics.mongo.games_db import update_score
 except Exception:
     async def update_score(*a, **kw):
         pass

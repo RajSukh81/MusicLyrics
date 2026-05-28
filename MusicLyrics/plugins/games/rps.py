@@ -11,7 +11,7 @@ from pyrogram.types import (
 from MusicLyrics.bot import bot
 
 try:
-    from MusicLyrics.mongo.games_db import save_game_score as update_score
+    from MusicLyrics.mongo.games_db import update_score
 except Exception:
     async def update_score(*a, **kw):
         pass
@@ -158,6 +158,5 @@ async def rps_callback(client, callback: CallbackQuery):
                 f"**{result}**"
             )
             del _rps_games[game_id]
-            return await callback.answer()
 
     await callback.answer()

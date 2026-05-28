@@ -222,7 +222,7 @@ async def autoreact_cmd(client, message: Message):
         await message.reply_text("❌ `/autoreact on|off|status`")
 
 
-@bot.on_message(filters.group & ~filters.service & ~filters.command, group=20)
+@bot.on_message(filters.group & ~filters.service & ~filters.command([""]), group=20)
 async def _autoreact_watcher(client, message: Message):
     """Auto-react to messages if enabled."""
     chat_id = message.chat.id

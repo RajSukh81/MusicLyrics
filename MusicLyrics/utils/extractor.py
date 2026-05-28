@@ -7,8 +7,6 @@ from typing import Optional
 
 from pyrogram.types import Message
 
-from MusicLyrics.bot import bot
-
 _URL_RE = re.compile(
     r"https?://[^\s<>\"']+|www\.[^\s<>\"']+",
     re.IGNORECASE,
@@ -63,7 +61,7 @@ async def extract_user(message: Message) -> tuple[Optional[int], Optional[str]]:
             if entity.type.value == "mention":
                 username = message.text[entity.offset + 1 : entity.offset + entity.length]
                 try:
-                    user = await bot.get_users(username)
+                    user = await message.chat._client.get_users(username)
                     return user.id, user.first_name
                 except Exception:
                     return None, None
@@ -72,7 +70,7 @@ async def extract_user(message: Message) -> tuple[Optional[int], Optional[str]]:
     if arg.isdigit():
         uid = int(arg)
         try:
-            user = await bot.get_users(uid)
+            user = await message.chat._client.get_users(uid)
             return user.id, user.first_name
         except Exception:
             return uid, str(uid)

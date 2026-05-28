@@ -9,7 +9,7 @@ from pyrogram.types import Message
 from MusicLyrics.bot import bot
 
 try:
-    from MusicLyrics.mongo.games_db import save_game_score as update_score
+    from MusicLyrics.mongo.games_db import update_score
 except Exception:
     async def update_score(*a, **kw):
         pass
@@ -117,7 +117,7 @@ async def cancel_race_cmd(_, message: Message):
         await message.reply_text("❌ কোনো রেস চলছে না!")
 
 
-@bot.on_message(filters.text & ~filters.command, group=16)
+@bot.on_message(filters.text & ~filters.command([""]), group=16)
 async def _typerace_watcher(_, message: Message):
     """Watch for typing race submissions."""
     user = message.from_user

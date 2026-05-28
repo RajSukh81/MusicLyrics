@@ -6,7 +6,7 @@ import logging
 
 from pyrogram import filters, Client
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from pyrogram.enums import ChatMemberStatus, ChatMembersFilter
+from pyrogram.enums import ChatMemberStatus
 
 from MusicLyrics.bot import bot
 from MusicLyrics.helpers.decorators import admin_required
@@ -118,7 +118,7 @@ async def report_cmd(client: Client, message: Message):
     # Tag admins
     admin_tags = []
     try:
-        async for member in client.get_chat_members(chat_id, filter=ChatMembersFilter.ADMINISTRATORS):
+        async for member in client.get_chat_members(chat_id, filter_="administrators"):
             if member.user and not member.user.is_bot:
                 admin_tags.append(member.user.mention)
     except Exception:

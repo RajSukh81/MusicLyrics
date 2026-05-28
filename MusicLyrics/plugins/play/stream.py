@@ -266,7 +266,6 @@ async def stream_audio(
             raise FileNotFoundError(f"Stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
 
     try:
-        audio = _make_audio_stream(media_path)
         await _do_play(chat_id, audio)
         _active_chats.add(chat_id)
         LOG.info("Streaming audio in %s: %s (%s)",
@@ -374,7 +373,6 @@ async def stream_video(
             raise FileNotFoundError(f"Video stream URL expired and all fallbacks failed for: {title or media_path[:80]}")
 
     try:
-        stream = _make_video_stream(media_path)
         await _do_play(chat_id, stream)
         _active_chats.add(chat_id)
         LOG.info("Streaming video in %s: %s (%s)",
@@ -452,8 +450,6 @@ async def stream_audio_with_image(
 
 
 async def pause_stream(chat_id: int) -> bool:
-    if pytgcalls is None:
-        return False
     try:
         await pytgcalls.pause_stream(chat_id)
         return True
@@ -463,8 +459,6 @@ async def pause_stream(chat_id: int) -> bool:
 
 
 async def resume_stream(chat_id: int) -> bool:
-    if pytgcalls is None:
-        return False
     try:
         await pytgcalls.resume_stream(chat_id)
         return True
@@ -485,8 +479,6 @@ async def seek_stream(chat_id: int, seconds: int) -> bool:
 
 async def set_volume(chat_id: int, volume: int) -> bool:
     """Set playback volume (1-200)."""
-    if pytgcalls is None:
-        return False
     volume = max(1, min(200, volume))
     try:
         await pytgcalls.change_volume(chat_id, volume)
@@ -498,11 +490,10 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 
 async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
-    if pytgcalls is not None:
-        try:
-            await pytgcalls.leave_group_call(chat_id)
-        except Exception:
-            LOG.exception("Leave VC failed: %s", chat_id)
+    try:
+        await pytgcalls.leave_group_call(chat_id)
+    except Exception:
+        LOG.exception("Leave VC failed: %s", chat_id)
     _active_chats.discard(chat_id)
     await clear_queue(chat_id)
 
