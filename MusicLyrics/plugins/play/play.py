@@ -69,6 +69,13 @@ from MusicLyrics.utils.autodelete import (
 
 LOG = logging.getLogger(__name__)
 
+# Track "Now Playing" messages for each chat (imported from stream.py)
+# We need to access this to track messages sent from play.py too
+try:
+    from MusicLyrics.plugins.play.stream import _now_playing_messages
+except ImportError:
+    _now_playing_messages = {}
+
 
 def _control_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -564,11 +571,11 @@ async def play_command(client: Client, message: Message):
 
     dur = format_duration(duration)
     text = (
-        f"**▶️ Now Playing**\n\n"
-        f"**🎵 Title:** [{title}]({url})\n"
-        f"**⏱ Duration:** {dur}\n"
-        f"**🎤 Channel:** {channel}\n"
-        f"**👤 Requested by:** {requester}"
+        f"▶️ **এখন চলছে**\n\n"
+        f"🎵 **Title:** [{title}]({url})\n"
+        f"⏱ **Duration:** {dur}\n"
+        f"🎤 **Channel:** {channel}\n"
+        f"👤 **Requested by:** {requester}"
     )
 
     try:
@@ -580,10 +587,18 @@ async def play_command(client: Client, message: Message):
                 caption=text,
                 reply_markup=_control_keyboard(),
             )
-            await auto_delete_playing(now_playing_msg)
+            # Track this message so we can delete it when track ends
+            if chat_id not in _now_playing_messages:
+                _now_playing_messages[chat_id] = []
+            _now_playing_messages[chat_id].append(now_playing_msg)
         else:
             await status_msg.edit_text(text, reply_markup=_control_keyboard())
-            await auto_delete_playing(status_msg)
+            # Track this message
+            if chat_id not in _now_playing_messages:
+                _now_playing_messages[chat_id] = []
+            _now_playing_messages[chat_id].append(status_msg)
     except Exception:
         await status_msg.edit_text(text, reply_markup=_control_keyboard())
-        await auto_delete_playing(status_msg)
+        if chat_id not in _now_playing_messages:
+            _now_playing_messages[chat_id] = []
+        _now_playing_messages[chat_id].append(status_msg)

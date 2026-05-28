@@ -42,6 +42,12 @@ from MusicLyrics.utils.autodelete import (
 
 LOG = logging.getLogger(__name__)
 
+# Track "Now Playing" messages (imported from stream.py)
+try:
+    from MusicLyrics.plugins.play.stream import _now_playing_messages
+except ImportError:
+    _now_playing_messages = {}
+
 def _control_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -103,10 +109,22 @@ async def skip_cmd(client: Client, message: Message):
         await auto_delete_service(message, reply)
         return
 
+    # Delete previous "Now Playing" messages
+    if chat_id in _now_playing_messages:
+        for old_msg in _now_playing_messages[chat_id]:
+            try:
+                await old_msg.delete()
+            except Exception:
+                pass
+        _now_playing_messages[chat_id].clear()
+
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
-        reply = await message.reply_text("⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।")
+        reply = await message.reply_text(
+            "✅ **Queue শেষ হয়ে গেছে!**\n\n"
+            "Voice chat থেকে বের হচ্ছি।"
+        )
         await auto_delete_service(message, reply)
         return
 
@@ -120,12 +138,17 @@ async def skip_cmd(client: Client, message: Message):
         dur = format_duration(next_item.duration)
         reply = await message.reply_text(
             f"⏭ **Skipped!**\n\n"
-            f"**▶️ Now Playing:** {next_item.title}\n"
-            f"**⏱ Duration:** {dur}\n"
-            f"**👤 Requested by:** {next_item.requester}",
+            f"▶️ **এখন চলছে:** {next_item.title}\n"
+            f"⏱ **Duration:** {dur}\n"
+            f"👤 **Requested by:** {next_item.requester}",
             reply_markup=_control_keyboard(),
         )
-        await auto_delete_playing(message, reply)
+        # Track this new "Now Playing" message
+        if chat_id not in _now_playing_messages:
+            _now_playing_messages[chat_id] = []
+        _now_playing_messages[chat_id].append(reply)
+        # Delete user's command
+        await auto_delete_cmd(message)
     except Exception:
         LOG.exception("Skip failed in %s", chat_id)
         reply = await message.reply_text("❌ পরের গানে যেতে সমস্যা হয়েছে।")
@@ -141,12 +164,24 @@ async def stop_cmd(client: Client, message: Message):
         reply = await message.reply_text("❌ কিছু চলছে না এখন।")
         await auto_delete_service(message, reply)
         return
+    
+    # Delete previous "Now Playing" messages
+    if chat_id in _now_playing_messages:
+        for old_msg in _now_playing_messages[chat_id]:
+            try:
+                await old_msg.delete()
+            except Exception:
+                pass
+        _now_playing_messages[chat_id].clear()
+    
     await leave_voice_chat(chat_id)
     reply = await message.reply_text(
-        "⏹ **Stopped!**\n"
-        "Queue clear করে voice chat থেকে বের হয়ে গেছি।"
+        "⏹ **Stopped!**\n\n"
+        "✅ Queue clear করে voice chat থেকে বের হয়ে গেছি।"
     )
     await auto_delete_service(message, reply)
+    # Delete user's command
+    await auto_delete_cmd(message)
 
 
 # ── /seek <seconds> ──────────────────────────────────────────────────────────
@@ -319,12 +354,22 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         await callback.answer("কিছু চলছে না!", show_alert=True)
         return
 
+    # Delete previous "Now Playing" messages
+    if chat_id in _now_playing_messages:
+        for old_msg in _now_playing_messages[chat_id]:
+            try:
+                await old_msg.delete()
+            except Exception:
+                pass
+        _now_playing_messages[chat_id].clear()
+
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
         await callback.answer("Queue শেষ!")
         reply = await callback.message.reply_text(
-            "⏹ Queue শেষ। Voice chat থেকে বের হচ্ছি।"
+            "✅ **Queue শেষ হয়ে গেছে!**\n\n"
+            "Voice chat থেকে বের হচ্ছি।"
         )
         await auto_delete_service(reply)
         return
@@ -340,11 +385,14 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         dur = format_duration(next_item.duration)
         reply = await callback.message.reply_text(
             f"⏭ **Skipped!**\n\n"
-            f"**▶️ Now Playing:** {next_item.title}\n"
-            f"**⏱ Duration:** {dur}",
+            f"▶️ **এখন চলছে:** {next_item.title}\n"
+            f"⏱ **Duration:** {dur}",
             reply_markup=_control_keyboard(),
         )
-        await auto_delete_playing(reply)
+        # Track this new "Now Playing" message
+        if chat_id not in _now_playing_messages:
+            _now_playing_messages[chat_id] = []
+        _now_playing_messages[chat_id].append(reply)
     except Exception:
         await callback.answer("Skip failed!", show_alert=True)
 
@@ -355,10 +403,21 @@ async def cb_stop(client: Client, callback: CallbackQuery):
     if not is_active(chat_id):
         await callback.answer("কিছু চলছে না!", show_alert=True)
         return
+    
+    # Delete previous "Now Playing" messages
+    if chat_id in _now_playing_messages:
+        for old_msg in _now_playing_messages[chat_id]:
+            try:
+                await old_msg.delete()
+            except Exception:
+                pass
+        _now_playing_messages[chat_id].clear()
+    
     await leave_voice_chat(chat_id)
     await callback.answer("⏹ Stopped")
     reply = await callback.message.reply_text(
-        "⏹ **Stopped!** Queue clear হয়ে গেছে।"
+        "⏹ **Stopped!**\n\n"
+        "✅ Queue clear হয়ে গেছে।"
     )
     await auto_delete_service(reply)
 
