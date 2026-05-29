@@ -711,11 +711,13 @@ async def main():
                 if asyncio.iscoroutine(calls):
                     calls = await calls
                 if isinstance(calls, (dict, set, list)):
-                    for chat_id in list(calls):
-                        try:
-                            await pytgcalls.leave_group_call(chat_id)
-                        except Exception:
-                            pass
+                    _leave_fn = getattr(pytgcalls, 'leave_call', None) or getattr(pytgcalls, 'leave_group_call', None)
+                    if _leave_fn:
+                        for chat_id in list(calls):
+                            try:
+                                await _leave_fn(chat_id)
+                            except Exception:
+                                pass
             except Exception:
                 LOG.warning("Could not leave active calls during shutdown.")
         if Config.STRING_SESSION and userbot:

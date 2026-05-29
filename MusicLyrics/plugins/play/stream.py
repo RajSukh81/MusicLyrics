@@ -303,11 +303,12 @@ async def _ensure_in_vc(chat_id: int):
 async def _do_play(chat_id: int, stream):
     """Call pytgcalls.play — join VC if needed, then start streaming.
 
-    Verifies playback actually started by checking active calls after play.
+    Compatible with py-tgcalls 2.1.x and 2.2.x APIs.
     """
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
 
+    # Method 1: play() with GroupCallConfig (py-tgcalls >= 2.1)
     if _HAS_GROUP_CALL_CONFIG:
         try:
             await pytgcalls.play(
@@ -320,21 +321,26 @@ async def _do_play(chat_id: int, stream):
         except (TypeError, AttributeError) as e:
             LOG.debug("play() with GroupCallConfig failed: %s", e)
 
-    # Fallback: explicitly join then play
+    # Method 2: plain play() (py-tgcalls 2.2.x — play() handles join automatically)
     try:
-        await pytgcalls.join_group_call(
-            chat_id,
-            stream,
-        )
+        await pytgcalls.play(chat_id, stream)
         _active_chats.add(chat_id)
-        LOG.info("join_group_call() succeeded for %s", chat_id)
+        LOG.info("play() succeeded for %s", chat_id)
         return
     except Exception as e:
-        LOG.debug("join_group_call failed, trying play(): %s", e)
+        LOG.debug("play() failed: %s", e)
 
-    await pytgcalls.play(chat_id, stream)
-    _active_chats.add(chat_id)
-    LOG.info("play() fallback succeeded for %s", chat_id)
+    # Method 3: explicit join_group_call (older py-tgcalls)
+    if hasattr(pytgcalls, 'join_group_call'):
+        try:
+            await pytgcalls.join_group_call(chat_id, stream)
+            _active_chats.add(chat_id)
+            LOG.info("join_group_call() succeeded for %s", chat_id)
+            return
+        except Exception as e:
+            LOG.debug("join_group_call() also failed: %s", e)
+
+    raise RuntimeError(f"All play methods failed for chat {chat_id}")
 
 
 # ── Progress Timer ────────────────────────────────────────────────────────────
@@ -717,7 +723,11 @@ async def stream_audio_with_image(
 
 async def pause_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.pause_stream(chat_id)
+        # py-tgcalls 2.2.x uses pause(), older uses pause_stream()
+        if hasattr(pytgcalls, 'pause'):
+            await pytgcalls.pause(chat_id)
+        else:
+            await pytgcalls.pause_stream(chat_id)
         return True
     except Exception:
         LOG.exception("Pause failed: %s", chat_id)
@@ -726,7 +736,11 @@ async def pause_stream(chat_id: int) -> bool:
 
 async def resume_stream(chat_id: int) -> bool:
     try:
-        await pytgcalls.resume_stream(chat_id)
+        # py-tgcalls 2.2.x uses resume(), older uses resume_stream()
+        if hasattr(pytgcalls, 'resume'):
+            await pytgcalls.resume(chat_id)
+        else:
+            await pytgcalls.resume_stream(chat_id)
         return True
     except Exception:
         LOG.exception("Resume failed: %s", chat_id)
@@ -747,7 +761,11 @@ async def set_volume(chat_id: int, volume: int) -> bool:
     """Set playback volume (1-200)."""
     volume = max(1, min(200, volume))
     try:
-        await pytgcalls.change_volume(chat_id, volume)
+        # py-tgcalls 2.2.x uses change_volume_call(), older uses change_volume()
+        if hasattr(pytgcalls, 'change_volume_call'):
+            await pytgcalls.change_volume_call(chat_id, volume)
+        else:
+            await pytgcalls.change_volume(chat_id, volume)
         return True
     except Exception:
         LOG.exception("Volume change failed: %s", chat_id)
@@ -759,11 +777,14 @@ async def leave_voice_chat(chat_id: int) -> None:
     # Stop progress timer
     _stop_progress_timer(chat_id)
 
-    # Try leaving with retries
+    # Try leaving with retries — py-tgcalls 2.2.x uses leave_call(), older uses leave_group_call()
     left = False
     for attempt in range(3):
         try:
-            await pytgcalls.leave_group_call(chat_id)
+            if hasattr(pytgcalls, 'leave_call'):
+                await pytgcalls.leave_call(chat_id)
+            else:
+                await pytgcalls.leave_group_call(chat_id)
             LOG.info("Left voice chat: %s (attempt %d)", chat_id, attempt + 1)
             left = True
             break
