@@ -331,27 +331,42 @@ async def shuffle_cmd(client: Client, message: Message):
 async def cb_pause(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     if not is_active(chat_id):
-        await callback.answer("কিছু চলছে না!", show_alert=True)
+        try:
+            await callback.answer("কিছু চলছে না!", show_alert=True)
+        except Exception:
+            pass
         return
     ok = await pause_stream(chat_id)
-    await callback.answer("⏸ Paused" if ok else "Pause failed")
+    try:
+        await callback.answer("⏸ Paused" if ok else "Pause failed")
+    except Exception:
+        pass
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_resume$"))
 async def cb_resume(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     if not is_active(chat_id):
-        await callback.answer("কিছু চলছে না!", show_alert=True)
+        try:
+            await callback.answer("কিছু চলছে না!", show_alert=True)
+        except Exception:
+            pass
         return
     ok = await resume_stream(chat_id)
-    await callback.answer("▶️ Resumed" if ok else "Resume failed")
+    try:
+        await callback.answer("▶️ Resumed" if ok else "Resume failed")
+    except Exception:
+        pass
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_skip$"))
 async def cb_skip(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     if not is_active(chat_id):
-        await callback.answer("কিছু চলছে না!", show_alert=True)
+        try:
+            await callback.answer("কিছু চলছে না!", show_alert=True)
+        except Exception:
+            pass
         return
 
     # Delete previous "Now Playing" messages
@@ -366,12 +381,18 @@ async def cb_skip(client: Client, callback: CallbackQuery):
     next_item = await skip_queue(chat_id)
     if next_item is None:
         await leave_voice_chat(chat_id)
-        await callback.answer("Queue শেষ!")
-        reply = await callback.message.reply_text(
-            "✅ **Queue শেষ হয়ে গেছে!**\n\n"
-            "Voice chat থেকে বের হচ্ছি।"
-        )
-        await auto_delete_service(reply)
+        try:
+            await callback.answer("Queue শেষ!")
+        except Exception:
+            pass
+        try:
+            reply = await callback.message.reply_text(
+                "✅ **Queue শেষ হয়ে গেছে!**\n\n"
+                "Voice chat থেকে বের হচ্ছি।"
+            )
+            await auto_delete_service(reply)
+        except Exception:
+            pass
         return
 
     try:
@@ -381,7 +402,10 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         else:
             await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
-        await callback.answer(f"⏭ {next_item.title[:30]}")
+        try:
+            await callback.answer(f"⏭ {next_item.title[:30]}")
+        except Exception:
+            pass
         dur = format_duration(next_item.duration)
         reply = await callback.message.reply_text(
             f"⏭ **Skipped!**\n\n"
@@ -394,14 +418,20 @@ async def cb_skip(client: Client, callback: CallbackQuery):
             _now_playing_messages[chat_id] = []
         _now_playing_messages[chat_id].append(reply)
     except Exception:
-        await callback.answer("Skip failed!", show_alert=True)
+        try:
+            await callback.answer("Skip failed!", show_alert=True)
+        except Exception:
+            pass
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_stop$"))
 async def cb_stop(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     if not is_active(chat_id):
-        await callback.answer("কিছু চলছে না!", show_alert=True)
+        try:
+            await callback.answer("কিছু চলছে না!", show_alert=True)
+        except Exception:
+            pass
         return
     
     # Delete previous "Now Playing" messages
@@ -414,12 +444,18 @@ async def cb_stop(client: Client, callback: CallbackQuery):
         _now_playing_messages[chat_id].clear()
     
     await leave_voice_chat(chat_id)
-    await callback.answer("⏹ Stopped")
-    reply = await callback.message.reply_text(
-        "⏹ **Stopped!**\n\n"
-        "✅ Queue clear হয়ে গেছে।"
-    )
-    await auto_delete_service(reply)
+    try:
+        await callback.answer("⏹ Stopped")
+    except Exception:
+        pass
+    try:
+        reply = await callback.message.reply_text(
+            "⏹ **Stopped!**\n\n"
+            "✅ Queue clear হয়ে গেছে। আবার গান শুনতে `/play` দিন।"
+        )
+        await auto_delete_service(reply)
+    except Exception:
+        pass
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_queue$"))
@@ -427,7 +463,10 @@ async def cb_queue(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     items = await get_queue(chat_id)
     if not items:
-        await callback.answer("Queue খালি!", show_alert=True)
+        try:
+            await callback.answer("Queue খালি!", show_alert=True)
+        except Exception:
+            pass
         return
     cq = await get_chat_queue(chat_id)
     lines = []
@@ -438,14 +477,20 @@ async def cb_queue(client: Client, callback: CallbackQuery):
     text = "\n".join(lines[:15])  # limit to 15 to avoid message length issues
     if len(items) > 15:
         text += f"\n\n... এবং আরো {len(items) - 15}টি গান"
-    await callback.answer(text[:200], show_alert=True)
+    try:
+        await callback.answer(text[:200], show_alert=True)
+    except Exception:
+        pass
 
 
 @bot.on_callback_query(filters.regex(r"^ctl_loop$"))
 async def cb_loop(client: Client, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     state = await toggle_loop(chat_id)
-    await callback.answer(
-        "🔁 Loop ON" if state else "🔁 Loop OFF",
-        show_alert=False,
-    )
+    try:
+        await callback.answer(
+            "🔁 Loop ON" if state else "🔁 Loop OFF",
+            show_alert=False,
+        )
+    except Exception:
+        pass

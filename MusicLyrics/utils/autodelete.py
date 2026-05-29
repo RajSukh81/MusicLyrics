@@ -13,8 +13,8 @@ from typing import Union
 LOG = logging.getLogger(__name__)
 
 # Default delays (in seconds)
-SERVICE_MSG_DELETE_DELAY = 15    # Error, usage, status messages
-PLAYING_MSG_DELETE_DELAY = 30    # "Now Playing", queue messages
+SERVICE_MSG_DELETE_DELAY = 20    # Error, usage, status messages
+PLAYING_MSG_DELETE_DELAY = 120   # "Now Playing", queue messages (longer so they stay visible)
 COMMAND_MSG_DELETE_DELAY = 5     # User's original /play, /vplay command
 
 

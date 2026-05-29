@@ -66,6 +66,12 @@ from MusicLyrics.utils.autodelete import (
 
 LOG = logging.getLogger(__name__)
 
+# Track "Now Playing" messages for each chat (imported from stream.py)
+try:
+    from MusicLyrics.plugins.play.stream import _now_playing_messages
+except ImportError:
+    _now_playing_messages = {}
+
 
 def _vcontrol_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -481,10 +487,19 @@ async def vplay_command(client: Client, message: Message):
                 caption=text,
                 reply_markup=_vcontrol_keyboard(),
             )
-            await auto_delete_playing(now_playing_msg)
+            # Track this message so we can delete it when track ends
+            if chat_id not in _now_playing_messages:
+                _now_playing_messages[chat_id] = []
+            _now_playing_messages[chat_id].append(now_playing_msg)
+            # Don't auto-delete — we'll delete when track ends
         else:
             await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
-            await auto_delete_playing(status_msg)
+            # Track this message
+            if chat_id not in _now_playing_messages:
+                _now_playing_messages[chat_id] = []
+            _now_playing_messages[chat_id].append(status_msg)
     except Exception:
         await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
-        await auto_delete_playing(status_msg)
+        if chat_id not in _now_playing_messages:
+            _now_playing_messages[chat_id] = []
+        _now_playing_messages[chat_id].append(status_msg)

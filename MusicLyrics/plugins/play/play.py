@@ -591,6 +591,7 @@ async def play_command(client: Client, message: Message):
             if chat_id not in _now_playing_messages:
                 _now_playing_messages[chat_id] = []
             _now_playing_messages[chat_id].append(now_playing_msg)
+            # Don't auto-delete — we'll delete when track ends
         else:
             await status_msg.edit_text(text, reply_markup=_control_keyboard())
             # Track this message

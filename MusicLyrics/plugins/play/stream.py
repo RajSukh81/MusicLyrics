@@ -98,6 +98,10 @@ async def _check_stream_url(url: str) -> bool:
     Returns True if URL is reachable (2xx/3xx), False otherwise.
     This prevents passing expired/dead URLs to py-tgcalls/ffprobe
     which causes JSONDecodeError crashes.
+    
+    NOTE: This check is intentionally lenient — we prefer false positives
+    (passing a maybe-dead URL to py-tgcalls) over false negatives
+    (rejecting a working URL because of a transient network issue).
     """
     if not _is_url(url):
         return True  # Not a URL, skip check
@@ -114,14 +118,25 @@ async def _check_stream_url(url: str) -> bool:
                     ) as resp:
                         if resp.status < 400:
                             return True
-                        if resp.status in (403, 410, 451):
-                            LOG.warning("Stream URL expired/blocked (HTTP %d): %s", resp.status, url[:80])
+                        # Only reject URLs that definitively don't exist
+                        # 404 = not found, 410 = gone permanently
+                        if resp.status in (404, 410):
+                            LOG.warning("Stream URL not found (HTTP %d): %s", resp.status, url[:80])
                             return False
+                        # For 403/451/etc — the URL might still work with py-tgcalls
+                        # because it uses different HTTP headers/cookies.
+                        # Don't reject it here.
+                        LOG.debug("Stream URL returned HTTP %d (not rejecting): %s", resp.status, url[:80])
+                        return True
+                except asyncio.TimeoutError:
+                    LOG.debug("Stream URL check timed out (not rejecting): %s", url[:80])
+                    return True  # Timeout doesn't mean URL is dead
                 except Exception:
                     continue
     except Exception:
         pass
-    return False  # Can't verify — assume dead
+    # If we can't check at all, assume the URL is OK — let py-tgcalls try it
+    return True
 
 
 def _validate_media(media_path: str) -> None:
@@ -567,12 +582,18 @@ async def _on_stream_end(client, update):
         LOG.warning("Stream end event with unknown chat_id: %s (type: %s)", update, type(update).__name__)
         return
 
-    # Clean up the finished track's file (if it was a local download)
+    LOG.info("Stream end event for chat %s", chat_id)
+
+    # Get the finished track info BEFORE cleaning up
     finished = await get_current(chat_id)
+    finished_title = finished.title if finished else "Unknown"
+    finished_requester = finished.requester if finished else ""
+
+    # Clean up the finished track's file (if it was a local download)
     if finished and not finished.is_stream_url and finished.media_path:
         cleanup(finished.media_path)
 
-    # Delete previous "Now Playing" messages for this chat
+    # Delete previous "Now Playing" / thumbnail messages for this chat
     if chat_id in _now_playing_messages:
         for old_msg in _now_playing_messages[chat_id]:
             try:
@@ -584,18 +605,22 @@ async def _on_stream_end(client, update):
 
     next_item = await skip_queue(chat_id)
     if next_item is None:
-        await leave_voice_chat(chat_id)
+        # Queue is empty — send a nice "song finished" message, then leave VC
         try:
             finish_msg = await bot.send_message(
                 chat_id,
-                "✅ **সব গান শেষ হয়ে গেছে!**\n\n"
-                "🎵 আবার গান শুনতে `/play` command দিন।\n"
-                "📜 গানের তালিকা দেখতে `/queue` দিন।\n\n"
-                "ধন্যবাদ! 🙏",
+                f"✅ **গান শেষ হয়ে গেছে!**\n\n"
+                f"🎵 **শেষ গান:** {finished_title}\n"
+                f"👤 **শুনিয়েছিলেন:** {finished_requester}\n\n"
+                f"🔄 আবার গান শুনতে `/play` কমান্ড দিন।\n"
+                f"📜 গানের তালিকা দেখতে `/queue` দিন।",
             )
             await auto_delete_service(finish_msg)
         except Exception:
             pass
+        # Now leave the voice chat
+        await leave_voice_chat(chat_id)
+        LOG.info("Queue empty, left voice chat in %s", chat_id)
         return
 
     # Play next track
@@ -648,6 +673,16 @@ async def _on_stream_end(client, update):
         # Don't auto-delete — we'll manually delete when track ends
     except Exception:
         LOG.exception("Failed to play next in queue for %s", chat_id)
+        # Send error message before leaving
+        try:
+            err_msg = await bot.send_message(
+                chat_id,
+                f"❌ **পরের গানটি চলানো যায়নি:** {next_item.title}\n\n"
+                "Voice chat থেকে বের হচ্ছে। আবার `/play` দিন।",
+            )
+            await auto_delete_service(err_msg)
+        except Exception:
+            pass
         await leave_voice_chat(chat_id)
 
 

@@ -1685,9 +1685,9 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
     import yt_dlp
 
     if audio_only:
-        fmt = "ba*/b"  # most permissive: best audio (any), fallback to best anything
+        fmt = "ba/b"  # best audio, fallback to best anything
     else:
-        fmt = "bv*[height<=720]+ba*/bv*+ba*/b"  # very permissive video+audio
+        fmt = "bv*[height<=720]+ba/bv+ba/b"  # video+audio with fallback
 
     # If proxy is dead, skip all proxy attempts and go direct immediately
     if _proxy_dead:
@@ -1737,7 +1737,7 @@ def _get_stream_url_sync(url: str, audio_only: bool) -> Optional[str]:
         try:
             no_proxy_opts = _base_ytdlp_opts()
             no_proxy_opts.pop("proxy", None)  # Force no proxy
-            no_proxy_opts["format"] = "ba*/b" if audio_only else "bv*+ba*/b"
+            no_proxy_opts["format"] = "ba/b" if audio_only else "bv+ba/b"
             no_proxy_opts["check_formats"] = False
             with yt_dlp.YoutubeDL(no_proxy_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -1869,7 +1869,7 @@ async def download_audio(url: str) -> Optional[str]:
     LOG.info("Direct download failed, trying yt-dlp for audio: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "ba*/b",
+        "format": "ba/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
         "overwrites": False,
         # Convert to a format py-tgcalls can stream reliably
@@ -1931,7 +1931,7 @@ async def download_video(url: str) -> Optional[str]:
     LOG.info("Direct download failed, trying yt-dlp for video: %s", url)
     opts = {
         **_base_ytdlp_opts(),
-        "format": "bv*[height<=720]+ba*/bv*+ba*/b",
+        "format": "bv*[height<=720]+ba/bv+ba/b",
         "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
         "merge_output_format": "mp4",
         "overwrites": False,
@@ -1960,7 +1960,7 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
     for combo in _get_client_combos()[:5]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
-            "format": "ba*/b",
+            "format": "ba/b",
             "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
             "default_search": "ytsearch",
             "noplaylist": True,
@@ -2024,7 +2024,7 @@ async def search_and_download_audio(query: str) -> tuple[Optional[str], Optional
         combos = _get_client_combos()
         opts = {
             **_base_ytdlp_opts(client_combo=combos[0]),
-            "format": "ba*/b",
+            "format": "ba/b",
             "outtmpl": os.path.join(_DOWNLOADS, "%(id)s.%(ext)s"),
             "default_search": "ytsearch",
             "noplaylist": True,
@@ -2093,7 +2093,7 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
     for combo in _get_client_combos()[:5]:
         opts = {
             **_base_ytdlp_opts(client_combo=combo),
-            "format": "bv*[height<=720]+ba*/bv*+ba*/b",
+            "format": "bv*[height<=720]+ba/bv+ba/b",
             "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
             "merge_output_format": "mp4",
             "default_search": "ytsearch",
@@ -2156,7 +2156,7 @@ async def search_and_download_video(query: str) -> tuple[Optional[str], Optional
         combos = _get_client_combos()
         opts = {
             **_base_ytdlp_opts(client_combo=combos[0]),
-            "format": "bv*[height<=720]+ba*/bv*+ba*/b",
+            "format": "bv*[height<=720]+ba/bv+ba/b",
             "outtmpl": os.path.join(_DOWNLOADS, "%(id)s_video.%(ext)s"),
             "merge_output_format": "mp4",
             "default_search": "ytsearch",
