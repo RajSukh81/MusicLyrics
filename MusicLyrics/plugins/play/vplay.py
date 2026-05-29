@@ -27,7 +27,14 @@ from MusicLyrics.plugins.play.queue import (
     get_chat_queue,
     format_duration,
 )
-from MusicLyrics.plugins.play.stream import stream_video, is_active
+from MusicLyrics.plugins.play.stream import (
+    stream_video,
+    is_active,
+    _now_playing_messages,
+    _control_keyboard,
+    _get_next_color,
+    _start_progress_timer,
+)
 from MusicLyrics.plugins.play.platforms.youtube import (
     search_youtube,
     get_video_stream_url,
@@ -65,29 +72,6 @@ from MusicLyrics.utils.autodelete import (
 )
 
 LOG = logging.getLogger(__name__)
-
-# Track "Now Playing" messages for each chat (imported from stream.py)
-try:
-    from MusicLyrics.plugins.play.stream import _now_playing_messages
-except ImportError:
-    _now_playing_messages = {}
-
-
-def _vcontrol_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("⏸ Pause", callback_data="ctl_pause"),
-                InlineKeyboardButton("▶️ Resume", callback_data="ctl_resume"),
-                InlineKeyboardButton("⏭ Skip", callback_data="ctl_skip"),
-            ],
-            [
-                InlineKeyboardButton("⏹ Stop", callback_data="ctl_stop"),
-                InlineKeyboardButton("📜 Queue", callback_data="ctl_queue"),
-                InlineKeyboardButton("🔁 Loop", callback_data="ctl_loop"),
-            ],
-        ]
-    )
 
 
 async def _get_video_media(url: str) -> tuple[str, bool]:
@@ -208,8 +192,6 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("Apple Music link parse করা যায়নি।")
         yt = await search_youtube(track["query"])
         if not yt:
-            # Fallback: SoundCloud
-            LOG.info("Apple Music -> YouTube video search failed, trying SoundCloud for: %s", track["query"])
             sc_path, sc_info = await search_and_download_soundcloud(track["query"])
             if sc_path and sc_info:
                 is_stream = bool(sc_info.get("_is_stream_url"))
@@ -225,8 +207,6 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("YouTube ও SoundCloud কোথাও video পাওয়া যায়নি।")
         media_path, is_stream = await _get_video_media(yt["url"])
         if not media_path:
-            # Fallback: SoundCloud
-            LOG.info("Apple Music -> YouTube video download failed, trying SoundCloud for: %s", track["query"])
             sc_path, sc_info = await search_and_download_soundcloud(track["query"])
             if sc_path and sc_info:
                 is_stream = bool(sc_info.get("_is_stream_url"))
@@ -265,8 +245,6 @@ async def _resolve_video(query: str, platform: str):
             search_query = f"{song['title']} {song.get('artist', '')}".strip()
         yt = await search_youtube(search_query)
         if not yt:
-            # Fallback: SoundCloud
-            LOG.info("JioSaavn -> YouTube video failed, trying SoundCloud for: %s", search_query)
             sc_path, sc_info = await search_and_download_soundcloud(search_query)
             if sc_path and sc_info:
                 is_stream = bool(sc_info.get("_is_stream_url"))
@@ -282,8 +260,6 @@ async def _resolve_video(query: str, platform: str):
             raise ValueError("JioSaavn video সমর্থন করে না এবং YouTube/SoundCloud-এও পাওয়া যায়নি।")
         media_path, is_stream = await _get_video_media(yt["url"])
         if not media_path:
-            # Fallback: SoundCloud
-            LOG.info("JioSaavn -> YouTube video download failed, trying SoundCloud for: %s", search_query)
             sc_path, sc_info = await search_and_download_soundcloud(search_query)
             if sc_path and sc_info:
                 is_stream = bool(sc_info.get("_is_stream_url"))
@@ -427,12 +403,13 @@ async def vplay_command(client: Client, message: Message):
 
     if position > 1 and is_active(chat_id):
         dur = format_duration(duration)
+        color = _get_next_color()
         await status_msg.edit_text(
             f"**🎬 Queue-তে যোগ হয়েছে #{position}** (Video)\n\n"
             f"**Title:** {title}\n"
             f"**Duration:** {dur}\n"
             f"**Requested by:** {requester}",
-            reply_markup=_vcontrol_keyboard(),
+            reply_markup=_control_keyboard(color),
         )
         await auto_delete_playing(status_msg)
         return
@@ -469,7 +446,11 @@ async def vplay_command(client: Client, message: Message):
         await auto_delete_service(status_msg)
         return
 
+    # Start progress timer for the video track
+    await _start_progress_timer(chat_id, duration)
+
     dur = format_duration(duration)
+    color = _get_next_color()
     text = (
         f"**🎬 Now Playing (Video)**\n\n"
         f"**🎵 Title:** [{title}]({url})\n"
@@ -485,7 +466,7 @@ async def vplay_command(client: Client, message: Message):
                 chat_id,
                 photo=thumbnail,
                 caption=text,
-                reply_markup=_vcontrol_keyboard(),
+                reply_markup=_control_keyboard(color),
             )
             # Track this message so we can delete it when track ends
             if chat_id not in _now_playing_messages:
@@ -493,13 +474,13 @@ async def vplay_command(client: Client, message: Message):
             _now_playing_messages[chat_id].append(now_playing_msg)
             # Don't auto-delete — we'll delete when track ends
         else:
-            await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
+            await status_msg.edit_text(text, reply_markup=_control_keyboard(color))
             # Track this message
             if chat_id not in _now_playing_messages:
                 _now_playing_messages[chat_id] = []
             _now_playing_messages[chat_id].append(status_msg)
     except Exception:
-        await status_msg.edit_text(text, reply_markup=_vcontrol_keyboard())
+        await status_msg.edit_text(text, reply_markup=_control_keyboard(color))
         if chat_id not in _now_playing_messages:
             _now_playing_messages[chat_id] = []
         _now_playing_messages[chat_id].append(status_msg)

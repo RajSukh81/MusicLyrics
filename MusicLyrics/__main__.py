@@ -274,15 +274,19 @@ def _load_plugins():
 
 
 async def _send_startup_message():
-    """Send a branded startup notification."""
+    """Send a branded startup notification from BOTH bot and userbot (assistant)."""
     if not Config.LOG_GROUP_ID and not Config.OWNER_ID:
         return
     bot_me = await get_bot_info()
     user_info = "N/A (no userbot)"
+    userbot_id = 0
+    userbot_name = "N/A"
     if userbot:
         try:
             user_me = await userbot.get_me()
             user_info = f"{user_me.first_name} (ID: {user_me.id})"
+            userbot_id = user_me.id
+            userbot_name = user_me.first_name
         except Exception:
             user_info = "N/A"
 
@@ -301,7 +305,7 @@ async def _send_startup_message():
     text = (
         f"**MusicLyrics v{__version__} Started Successfully!**\n\n"
         f"**Bot:** @{bot_me.username} (ID: `{bot_me.id}`)\n"
-        f"**Userbot:** {user_info}\n"
+        f"**Userbot/Assistant:** {user_info}\n"
         f"**Handlers:** {handler_count}\n"
         f"**PyTgCalls:** {'Active' if pytgcalls else 'Disabled'}\n"
         f"**CPU:** {cpu_info}\n"
@@ -316,6 +320,24 @@ async def _send_startup_message():
     # Direct send (not fire-and-forget) only for startup
     for cid in {Config.LOG_GROUP_ID, Config.OWNER_ID} - {0, None}:
         await _safe_send(cid, text, photo=Config.BRAND_PHOTO)
+
+    # ── Assistant (Userbot) also sends a startup message ──
+    # This makes it clear which userbot/assistant account is being used
+    if userbot and userbot_id:
+        assistant_text = (
+            f"🎵 **MusicLyrics Assistant Online!**\n\n"
+            f"**Assistant ID:** `{userbot_id}`\n"
+            f"**Assistant Name:** {userbot_name}\n"
+            f"**Bot:** @{bot_me.username}\n\n"
+            f"✅ Voice chat streaming is ready.\n"
+            f"I will join voice chats to play music when requested."
+        )
+        for cid in {Config.LOG_GROUP_ID, Config.OWNER_ID} - {0, None}:
+            try:
+                await userbot.send_message(cid, assistant_text)
+                LOG.info("Assistant startup message sent to %s", cid)
+            except Exception as e:
+                LOG.warning("Could not send assistant startup message to %s: %s", cid, e)
 
 
 async def _start_with_retry(client, name, max_retries=5):

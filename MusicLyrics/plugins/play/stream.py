@@ -1,7 +1,8 @@
 """Core streaming logic -- join/leave voice chats, stream audio/video.
 
 Supports both local file paths and direct stream URLs (e.g. from YouTube).
-Uses the py-tgcalls 2.x MediaStream API with proper flags (based on AnonXMusic).
+Uses the py-tgcalls 2.x MediaStream API with proper flags.
+Includes progress timer and auto-leave on track end.
 """
 
 from __future__ import annotations
@@ -9,7 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Optional
+
+from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 
 from MusicLyrics.bot import bot
 from MusicLyrics.userbot import pytgcalls, userbot
@@ -40,6 +47,15 @@ _active_chats: set[int] = set()
 
 # Track "Now Playing" messages for each chat so we can delete them when track ends
 _now_playing_messages: dict[int, list] = {}
+
+# Track playback start times for progress display
+_play_start_times: dict[int, float] = {}
+
+# Track current track durations for progress display
+_play_durations: dict[int, int] = {}
+
+# Active progress update tasks per chat
+_progress_tasks: dict[int, asyncio.Task] = {}
 
 # Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
 if pytgcalls is None:
@@ -85,6 +101,46 @@ try:
     _STREAM_END_TYPE = StreamAudioEnded
 except ImportError:
     _STREAM_END_TYPE = None
+
+
+# ── Color cycling for control buttons ──────────────────────────────────────────
+_BUTTON_COLORS = [
+    # (emoji_color_name, button_suffix) — cycle through these
+    ("🔴", "🔴"), ("🟡", "🟡"), ("🟢", "🟢"), ("🔵", "🔵"),
+    ("🟣", "🟣"), ("🟠", "🟠"), ("⚪", "⚪"), ("💎", "💎"),
+]
+_current_color_index: int = 0
+
+
+def _get_next_color() -> str:
+    """Get the next color emoji for button cycling."""
+    global _current_color_index
+    color = _BUTTON_COLORS[_current_color_index % len(_BUTTON_COLORS)][1]
+    _current_color_index += 1
+    return color
+
+
+def _control_keyboard(color: str = "") -> InlineKeyboardMarkup:
+    """Build the control keyboard with optional color indicator."""
+    if not color:
+        color = "🎵"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(f"⏸ Pause", callback_data="ctl_pause"),
+                InlineKeyboardButton(f"▶️ Resume", callback_data="ctl_resume"),
+                InlineKeyboardButton(f"⏭ Skip", callback_data="ctl_skip"),
+            ],
+            [
+                InlineKeyboardButton(f"⏹ Stop", callback_data="ctl_stop"),
+                InlineKeyboardButton(f"📜 Queue", callback_data="ctl_queue"),
+                InlineKeyboardButton(f"🔁 Loop", callback_data="ctl_loop"),
+            ],
+            [
+                InlineKeyboardButton(f"{color} Add to Group", url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true"),
+            ],
+        ]
+    )
 
 
 def _is_url(path: str) -> bool:
@@ -220,8 +276,47 @@ def _make_video_stream(media_path: str):
     return MediaStream(media_path)
 
 
+async def _ensure_in_vc(chat_id: int):
+    """Ensure the userbot is in the voice chat for the given chat.
+
+    If not already in the VC, join it first before playing.
+    This fixes the issue where pytgcalls.play() with auto_start
+    sometimes fails to join the VC.
+    """
+    if pytgcalls is None:
+        raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
+
+    # Check if already in a call for this chat
+    try:
+        calls = pytgcalls.calls
+        if asyncio.iscoroutine(calls):
+            calls = asyncio.get_event_loop().run_until_complete(calls)
+        if chat_id in calls:
+            LOG.debug("Already in voice chat for %s, no need to join", chat_id)
+            return
+    except Exception:
+        pass
+
+    # Try to check active calls via pytgcalls
+    try:
+        active_calls = pytgcalls.active_calls
+        if asyncio.iscoroutine(active_calls):
+            # Can't await here, skip check
+            pass
+        elif isinstance(active_calls, (list, dict, set)):
+            if chat_id in active_calls:
+                return
+    except Exception:
+        pass
+
+    LOG.info("Ensuring userbot is in voice chat for chat %s", chat_id)
+
+
 async def _do_play(chat_id: int, stream):
-    """Call pytgcalls.play with GroupCallConfig if available."""
+    """Call pytgcalls.play — join VC if needed, then start streaming."""
+    if pytgcalls is None:
+        raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
+
     if _HAS_GROUP_CALL_CONFIG:
         try:
             await pytgcalls.play(
@@ -231,7 +326,132 @@ async def _do_play(chat_id: int, stream):
             return
         except (TypeError, AttributeError) as e:
             LOG.debug("play() with GroupCallConfig failed: %s", e)
+
+    # Fallback: explicitly join then play
+    try:
+        await pytgcalls.join_group_call(
+            chat_id,
+            stream,
+        )
+        return
+    except Exception as e:
+        LOG.debug("join_group_call failed, trying play(): %s", e)
+
     await pytgcalls.play(chat_id, stream)
+
+
+# ── Progress Timer ────────────────────────────────────────────────────────────
+
+def _format_progress(elapsed: int, total: int) -> str:
+    """Format a progress bar string showing elapsed/total time."""
+    if total <= 0:
+        return f"⏱ {format_duration(elapsed)} / Live"
+    
+    elapsed_str = format_duration(elapsed)
+    total_str = format_duration(total)
+    
+    # Create a visual progress bar
+    bar_length = 12
+    if total > 0:
+        progress = min(elapsed / total, 1.0)
+        filled = int(bar_length * progress)
+    else:
+        filled = 0
+    
+    bar = "▬" * filled + "⬤" + "▬" * (bar_length - filled)
+    return f"⏱ {elapsed_str} / {total_str}\n{bar}"
+
+
+async def _start_progress_timer(chat_id: int, duration: int):
+    """Start a background task that updates the Now Playing message with progress."""
+    # Cancel existing timer for this chat
+    _stop_progress_timer(chat_id)
+    
+    _play_start_times[chat_id] = time.time()
+    _play_durations[chat_id] = duration
+    
+    async def _update_progress():
+        """Periodically update the Now Playing message with progress."""
+        update_interval = 15  # Update every 15 seconds
+        color_cycle_interval = 5  # Change color every 5 updates (75 seconds)
+        update_count = 0
+        
+        while True:
+            await asyncio.sleep(update_interval)
+            update_count += 1
+            
+            if chat_id not in _play_start_times:
+                return
+            
+            if chat_id not in _now_playing_messages or not _now_playing_messages[chat_id]:
+                return
+            
+            elapsed = int(time.time() - _play_start_times[chat_id])
+            total = _play_durations.get(chat_id, 0)
+            
+            # Stop updating if we've exceeded duration + buffer
+            if total > 0 and elapsed > total + 30:
+                return
+            
+            # Get current track info
+            current = await get_current(chat_id)
+            if not current:
+                return
+            
+            # Get next color for button cycling
+            if update_count % color_cycle_interval == 0:
+                color = _get_next_color()
+            else:
+                color = "🎵"
+            
+            progress_text = _format_progress(elapsed, total)
+            
+            dur = format_duration(total)
+            text = (
+                f"▶️ **এখন চলছে**\n\n"
+                f"🎵 **Title:** [{current.title}]({current.url})\n"
+                f"⏱ **Duration:** {dur}\n"
+                f"🎤 **Channel:** {getattr(current, 'channel', '') if hasattr(current, 'channel') else ''}\n"
+                f"👤 **Requested by:** {current.requester}\n\n"
+                f"{progress_text}"
+            )
+            
+            # Update the most recent Now Playing message
+            last_msg = _now_playing_messages[chat_id][-1] if _now_playing_messages[chat_id] else None
+            if last_msg:
+                try:
+                    # Check if it's a photo message or text message
+                    if hasattr(last_msg, 'photo') and last_msg.photo:
+                        await last_msg.edit_caption(
+                            caption=text,
+                            reply_markup=_control_keyboard(color),
+                        )
+                    else:
+                        await last_msg.edit_text(
+                            text,
+                            reply_markup=_control_keyboard(color),
+                        )
+                except Exception as e:
+                    LOG.debug("Progress update failed for %s: %s", chat_id, e)
+                    # If message was deleted, stop updating
+                    if "MESSAGE_ID_INVALID" in str(e) or "message not found" in str(e).lower():
+                        return
+    
+    task = asyncio.create_task(_update_progress())
+    _progress_tasks[chat_id] = task
+
+
+def _stop_progress_timer(chat_id: int):
+    """Stop the progress timer for a chat."""
+    if chat_id in _progress_tasks:
+        try:
+            _progress_tasks[chat_id].cancel()
+        except Exception:
+            pass
+        del _progress_tasks[chat_id]
+    
+    _play_start_times.pop(chat_id, None)
+    _play_durations.pop(chat_id, None)
 
 
 # -- Public API ---
@@ -540,6 +760,9 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 
 async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
+    # Stop progress timer
+    _stop_progress_timer(chat_id)
+    
     try:
         await pytgcalls.leave_group_call(chat_id)
         LOG.info("Left voice chat: %s", chat_id)
@@ -583,6 +806,9 @@ async def _on_stream_end(client, update):
         return
 
     LOG.info("Stream end event for chat %s", chat_id)
+
+    # Stop the progress timer
+    _stop_progress_timer(chat_id)
 
     # Get the finished track info BEFORE cleaning up
     finished = await get_current(chat_id)
@@ -659,12 +885,18 @@ async def _on_stream_end(client, update):
             )
 
         dur = format_duration(next_item.duration)
+        color = _get_next_color()
+        
+        # Start progress timer for the new track
+        await _start_progress_timer(chat_id, next_item.duration)
+        
         np_msg = await bot.send_message(
             chat_id,
             f"▶️ **এখন চলছে**\n\n"
             f"🎵 **Title:** {next_item.title}\n"
             f"⏱ **Duration:** {dur}\n"
             f"👤 **Requested by:** {next_item.requester}",
+            reply_markup=_control_keyboard(color),
         )
         # Track this message so we can delete it when this track ends
         if chat_id not in _now_playing_messages:
@@ -743,3 +975,49 @@ if pytgcalls is not None:
 
     if not _registered:
         LOG.warning("Could not register stream-end callback -- auto-skip will not work.")
+
+    # ── ALSO register on_kicked / on_left to clean up ──
+    try:
+        if hasattr(pytgcalls, "on_kicked"):
+            @pytgcalls.on_kicked()
+            async def _on_kicked(client, chat_id: int):
+                LOG.info("Userbot kicked from voice chat in %s — cleaning up", chat_id)
+                _stop_progress_timer(chat_id)
+                _active_chats.discard(chat_id)
+                if chat_id in _now_playing_messages:
+                    for old_msg in _now_playing_messages[chat_id]:
+                        try:
+                            await old_msg.delete()
+                        except Exception:
+                            pass
+                    del _now_playing_messages[chat_id]
+                await clear_queue(chat_id)
+    except (AttributeError, TypeError) as e:
+        LOG.debug("on_kicked registration failed: %s", e)
+
+    # ── Register on_group_call_left for when the userbot leaves/is removed ──
+    try:
+        from pytgcalls import filters as _ptg_filters2
+        if hasattr(_ptg_filters2, "left"):
+            @pytgcalls.on_update(_ptg_filters2.left)
+            async def _on_left_handler(client, update):
+                left_chat = None
+                if hasattr(update, "chat_id"):
+                    left_chat = update.chat_id
+                elif isinstance(update, int):
+                    left_chat = update
+                if left_chat:
+                    LOG.info("Userbot left voice chat in %s — cleaning up", left_chat)
+                    _stop_progress_timer(left_chat)
+                    _active_chats.discard(left_chat)
+                    if left_chat in _now_playing_messages:
+                        for old_msg in _now_playing_messages[left_chat]:
+                            try:
+                                await old_msg.delete()
+                            except Exception:
+                                pass
+                        del _now_playing_messages[left_chat]
+                    await clear_queue(left_chat)
+            LOG.info("Left voice chat handler registered via pytgcalls.filters.left")
+    except (ImportError, AttributeError, TypeError) as e:
+        LOG.debug("Left filter registration failed: %s", e)

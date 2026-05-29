@@ -33,6 +33,11 @@ from MusicLyrics.plugins.play.stream import (
     stream_audio,
     stream_video,
     is_active,
+    _now_playing_messages,
+    _control_keyboard,
+    _get_next_color,
+    _start_progress_timer,
+    _stop_progress_timer,
 )
 from MusicLyrics.utils.autodelete import (
     auto_delete_service,
@@ -41,28 +46,6 @@ from MusicLyrics.utils.autodelete import (
 )
 
 LOG = logging.getLogger(__name__)
-
-# Track "Now Playing" messages (imported from stream.py)
-try:
-    from MusicLyrics.plugins.play.stream import _now_playing_messages
-except ImportError:
-    _now_playing_messages = {}
-
-def _control_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("⏸ Pause", callback_data="ctl_pause"),
-                InlineKeyboardButton("▶️ Resume", callback_data="ctl_resume"),
-                InlineKeyboardButton("⏭ Skip", callback_data="ctl_skip"),
-            ],
-            [
-                InlineKeyboardButton("⏹ Stop", callback_data="ctl_stop"),
-                InlineKeyboardButton("📜 Queue", callback_data="ctl_queue"),
-                InlineKeyboardButton("🔁 Loop", callback_data="ctl_loop"),
-            ],
-        ]
-    )
 
 
 # ── /pause ───────────────────────────────────────────────────────────────────
@@ -109,6 +92,9 @@ async def skip_cmd(client: Client, message: Message):
         await auto_delete_service(message, reply)
         return
 
+    # Stop progress timer
+    _stop_progress_timer(chat_id)
+
     # Delete previous "Now Playing" messages
     if chat_id in _now_playing_messages:
         for old_msg in _now_playing_messages[chat_id]:
@@ -135,13 +121,18 @@ async def skip_cmd(client: Client, message: Message):
         else:
             await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
+        
+        # Start progress timer for the new track
+        await _start_progress_timer(chat_id, next_item.duration)
+        
         dur = format_duration(next_item.duration)
+        color = _get_next_color()
         reply = await message.reply_text(
             f"⏭ **Skipped!**\n\n"
             f"▶️ **এখন চলছে:** {next_item.title}\n"
             f"⏱ **Duration:** {dur}\n"
             f"👤 **Requested by:** {next_item.requester}",
-            reply_markup=_control_keyboard(),
+            reply_markup=_control_keyboard(color),
         )
         # Track this new "Now Playing" message
         if chat_id not in _now_playing_messages:
@@ -164,6 +155,9 @@ async def stop_cmd(client: Client, message: Message):
         reply = await message.reply_text("❌ কিছু চলছে না এখন।")
         await auto_delete_service(message, reply)
         return
+    
+    # Stop progress timer
+    _stop_progress_timer(chat_id)
     
     # Delete previous "Now Playing" messages
     if chat_id in _now_playing_messages:
@@ -279,6 +273,7 @@ async def nowplaying_cmd(client: Client, message: Message):
         return
     dur = format_duration(current.duration)
     kind = "🎬 Video" if current.stream_type == "video" else "🎵 Audio"
+    color = _get_next_color()
     text = (
         f"**▶️ Now Playing**\n\n"
         f"**{kind}:** [{current.title}]({current.url})\n"
@@ -288,10 +283,10 @@ async def nowplaying_cmd(client: Client, message: Message):
     if current.thumbnail:
         reply = await bot.send_photo(
             chat_id, photo=current.thumbnail,
-            caption=text, reply_markup=_control_keyboard(),
+            caption=text, reply_markup=_control_keyboard(color),
         )
     else:
-        reply = await message.reply_text(text, reply_markup=_control_keyboard())
+        reply = await message.reply_text(text, reply_markup=_control_keyboard(color))
     await auto_delete_playing(message, reply)
 
 
@@ -369,6 +364,9 @@ async def cb_skip(client: Client, callback: CallbackQuery):
             pass
         return
 
+    # Stop progress timer
+    _stop_progress_timer(chat_id)
+
     # Delete previous "Now Playing" messages
     if chat_id in _now_playing_messages:
         for old_msg in _now_playing_messages[chat_id]:
@@ -402,16 +400,21 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         else:
             await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
+        
+        # Start progress timer for the new track
+        await _start_progress_timer(chat_id, next_item.duration)
+        
         try:
             await callback.answer(f"⏭ {next_item.title[:30]}")
         except Exception:
             pass
         dur = format_duration(next_item.duration)
+        color = _get_next_color()
         reply = await callback.message.reply_text(
             f"⏭ **Skipped!**\n\n"
             f"▶️ **এখন চলছে:** {next_item.title}\n"
             f"⏱ **Duration:** {dur}",
-            reply_markup=_control_keyboard(),
+            reply_markup=_control_keyboard(color),
         )
         # Track this new "Now Playing" message
         if chat_id not in _now_playing_messages:
@@ -433,6 +436,9 @@ async def cb_stop(client: Client, callback: CallbackQuery):
         except Exception:
             pass
         return
+    
+    # Stop progress timer
+    _stop_progress_timer(chat_id)
     
     # Delete previous "Now Playing" messages
     if chat_id in _now_playing_messages:
