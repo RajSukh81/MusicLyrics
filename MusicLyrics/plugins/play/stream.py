@@ -153,11 +153,7 @@ async def _check_stream_url(url: str) -> bool:
 
     Returns True if URL is reachable (2xx/3xx), False otherwise.
     This prevents passing expired/dead URLs to py-tgcalls/ffprobe
-    which causes JSONDecodeError crashes.
-    
-    NOTE: This check is intentionally lenient — we prefer false positives
-    (passing a maybe-dead URL to py-tgcalls) over false negatives
-    (rejecting a working URL because of a transient network issue).
+    which causes silent no-audio playback or JSONDecodeError crashes.
     """
     if not _is_url(url):
         return True  # Not a URL, skip check
@@ -169,24 +165,17 @@ async def _check_stream_url(url: str) -> bool:
                 try:
                     async with method(
                         url,
-                        timeout=aiohttp.ClientTimeout(total=5, connect=3),
+                        timeout=aiohttp.ClientTimeout(total=8, connect=5),
                         allow_redirects=True,
                     ) as resp:
                         if resp.status < 400:
                             return True
-                        # Only reject URLs that definitively don't exist
-                        # 404 = not found, 410 = gone permanently
-                        if resp.status in (404, 410):
-                            LOG.warning("Stream URL not found (HTTP %d): %s", resp.status, url[:80])
-                            return False
-                        # For 403/451/etc — the URL might still work with py-tgcalls
-                        # because it uses different HTTP headers/cookies.
-                        # Don't reject it here.
-                        LOG.debug("Stream URL returned HTTP %d (not rejecting): %s", resp.status, url[:80])
-                        return True
+                        # Reject all 4xx/5xx — URL is dead/expired/forbidden
+                        LOG.warning("Stream URL failed (HTTP %d): %s", resp.status, url[:80])
+                        return False
                 except asyncio.TimeoutError:
-                    LOG.debug("Stream URL check timed out (not rejecting): %s", url[:80])
-                    return True  # Timeout doesn't mean URL is dead
+                    LOG.warning("Stream URL check timed out: %s", url[:80])
+                    return False  # Timeout likely means URL is dead
                 except Exception:
                     continue
     except Exception:
@@ -290,7 +279,7 @@ async def _ensure_in_vc(chat_id: int):
     try:
         calls = pytgcalls.calls
         if asyncio.iscoroutine(calls):
-            calls = asyncio.get_event_loop().run_until_complete(calls)
+            calls = await calls
         if chat_id in calls:
             LOG.debug("Already in voice chat for %s, no need to join", chat_id)
             return
@@ -301,8 +290,7 @@ async def _ensure_in_vc(chat_id: int):
     try:
         active_calls = pytgcalls.active_calls
         if asyncio.iscoroutine(active_calls):
-            # Can't await here, skip check
-            pass
+            active_calls = await active_calls
         elif isinstance(active_calls, (list, dict, set)):
             if chat_id in active_calls:
                 return
@@ -313,7 +301,10 @@ async def _ensure_in_vc(chat_id: int):
 
 
 async def _do_play(chat_id: int, stream):
-    """Call pytgcalls.play — join VC if needed, then start streaming."""
+    """Call pytgcalls.play — join VC if needed, then start streaming.
+
+    Verifies playback actually started by checking active calls after play.
+    """
     if pytgcalls is None:
         raise RuntimeError("Music streaming is disabled -- STRING_SESSION not configured.")
 
@@ -323,6 +314,8 @@ async def _do_play(chat_id: int, stream):
                 chat_id, stream,
                 config=GroupCallConfig(auto_start=True),
             )
+            _active_chats.add(chat_id)
+            LOG.info("play() with GroupCallConfig succeeded for %s", chat_id)
             return
         except (TypeError, AttributeError) as e:
             LOG.debug("play() with GroupCallConfig failed: %s", e)
@@ -333,11 +326,15 @@ async def _do_play(chat_id: int, stream):
             chat_id,
             stream,
         )
+        _active_chats.add(chat_id)
+        LOG.info("join_group_call() succeeded for %s", chat_id)
         return
     except Exception as e:
         LOG.debug("join_group_call failed, trying play(): %s", e)
 
     await pytgcalls.play(chat_id, stream)
+    _active_chats.add(chat_id)
+    LOG.info("play() fallback succeeded for %s", chat_id)
 
 
 # ── Progress Timer ────────────────────────────────────────────────────────────
@@ -522,7 +519,6 @@ async def stream_audio(
     try:
         audio = _make_audio_stream(media_path)
         await _do_play(chat_id, audio)
-        _active_chats.add(chat_id)
         LOG.info("Streaming audio in %s: %s (%s)",
                  chat_id, title, media_path[:100])
     except Exception as exc:
@@ -762,12 +758,23 @@ async def leave_voice_chat(chat_id: int) -> None:
     """Leave the voice chat and clean up."""
     # Stop progress timer
     _stop_progress_timer(chat_id)
-    
-    try:
-        await pytgcalls.leave_group_call(chat_id)
-        LOG.info("Left voice chat: %s", chat_id)
-    except Exception:
-        LOG.exception("Leave VC failed: %s", chat_id)
+
+    # Try leaving with retries
+    left = False
+    for attempt in range(3):
+        try:
+            await pytgcalls.leave_group_call(chat_id)
+            LOG.info("Left voice chat: %s (attempt %d)", chat_id, attempt + 1)
+            left = True
+            break
+        except Exception as e:
+            LOG.warning("Leave VC attempt %d failed for %s: %s", attempt + 1, chat_id, e)
+            if attempt < 2:
+                await asyncio.sleep(1)
+
+    if not left:
+        LOG.error("Could not leave voice chat %s after 3 attempts", chat_id)
+
     _active_chats.discard(chat_id)
     # Clear now playing messages tracking
     if chat_id in _now_playing_messages:

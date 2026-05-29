@@ -333,7 +333,7 @@ async def cb_pause(client: Client, callback: CallbackQuery):
         return
     ok = await pause_stream(chat_id)
     try:
-        await callback.answer("⏸ Paused" if ok else "Pause failed")
+        await callback.answer("⏸ Paused!" if ok else "❌ Pause failed")
     except Exception:
         pass
 
@@ -349,7 +349,7 @@ async def cb_resume(client: Client, callback: CallbackQuery):
         return
     ok = await resume_stream(chat_id)
     try:
-        await callback.answer("▶️ Resumed" if ok else "Resume failed")
+        await callback.answer("▶️ Resumed!" if ok else "❌ Resume failed")
     except Exception:
         pass
 
@@ -363,6 +363,12 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         except Exception:
             pass
         return
+
+    # Answer callback IMMEDIATELY to prevent timeout
+    try:
+        await callback.answer("⏭ Skipping...")
+    except Exception:
+        pass
 
     # Stop progress timer
     _stop_progress_timer(chat_id)
@@ -378,11 +384,6 @@ async def cb_skip(client: Client, callback: CallbackQuery):
 
     next_item = await skip_queue(chat_id)
     if next_item is None:
-        await leave_voice_chat(chat_id)
-        try:
-            await callback.answer("Queue শেষ!")
-        except Exception:
-            pass
         try:
             reply = await callback.message.reply_text(
                 "✅ **Queue শেষ হয়ে গেছে!**\n\n"
@@ -391,6 +392,7 @@ async def cb_skip(client: Client, callback: CallbackQuery):
             await auto_delete_service(reply)
         except Exception:
             pass
+        await leave_voice_chat(chat_id)
         return
 
     try:
@@ -400,14 +402,10 @@ async def cb_skip(client: Client, callback: CallbackQuery):
         else:
             await stream_audio(chat_id, next_item.media_path,
                                title=next_item.title)
-        
+
         # Start progress timer for the new track
         await _start_progress_timer(chat_id, next_item.duration)
-        
-        try:
-            await callback.answer(f"⏭ {next_item.title[:30]}")
-        except Exception:
-            pass
+
         dur = format_duration(next_item.duration)
         color = _get_next_color()
         reply = await callback.message.reply_text(
@@ -421,8 +419,9 @@ async def cb_skip(client: Client, callback: CallbackQuery):
             _now_playing_messages[chat_id] = []
         _now_playing_messages[chat_id].append(reply)
     except Exception:
+        LOG.exception("Skip callback failed in %s", chat_id)
         try:
-            await callback.answer("Skip failed!", show_alert=True)
+            await callback.message.reply_text("❌ Skip করা যায়নি। আবার চেষ্টা করুন।")
         except Exception:
             pass
 
@@ -436,10 +435,16 @@ async def cb_stop(client: Client, callback: CallbackQuery):
         except Exception:
             pass
         return
-    
+
+    # Answer callback IMMEDIATELY to prevent timeout
+    try:
+        await callback.answer("⏹ Stopping...")
+    except Exception:
+        pass
+
     # Stop progress timer
     _stop_progress_timer(chat_id)
-    
+
     # Delete previous "Now Playing" messages
     if chat_id in _now_playing_messages:
         for old_msg in _now_playing_messages[chat_id]:
@@ -448,12 +453,8 @@ async def cb_stop(client: Client, callback: CallbackQuery):
             except Exception:
                 pass
         _now_playing_messages[chat_id].clear()
-    
+
     await leave_voice_chat(chat_id)
-    try:
-        await callback.answer("⏹ Stopped")
-    except Exception:
-        pass
     try:
         reply = await callback.message.reply_text(
             "⏹ **Stopped!**\n\n"
