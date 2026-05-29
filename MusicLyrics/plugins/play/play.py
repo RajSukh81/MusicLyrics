@@ -367,16 +367,28 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         return info, media_path, is_stream
 
     # -- Plain text query --
-    # Priority: YouTube yt-dlp → SoundCloud → JioSaavn → YouTube proxy
+    # Priority: YouTube → SoundCloud → JioSaavn → Apple Music → Spotify
 
-    # 1. YouTube yt-dlp search+download (fastest, direct download)
-    LOG.info("Query search: trying yt-dlp search+download for: %s", query)
+    # 1. YouTube yt-dlp search+download
+    LOG.info("Query search: trying yt-dlp for: %s", query)
     filepath, dl_info = await search_and_download_audio(query)
     if filepath and dl_info:
         return dl_info, filepath, False
 
+    # 1b. YouTube proxy stream URL
+    LOG.info("yt-dlp failed, trying YouTube proxy for: %s", query)
+    yt = await search_youtube(query)
+    if yt:
+        if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
+            raise ValueError(
+                f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, play করা যাবে না।"
+            )
+        media_path, is_stream = await _get_audio_media(yt["url"])
+        if media_path:
+            return yt, media_path, is_stream
+
     # 2. SoundCloud
-    LOG.info("yt-dlp failed, trying SoundCloud for: %s", query)
+    LOG.info("YouTube failed, trying SoundCloud for: %s", query)
     try:
         sc_path, sc_info = await search_and_download_soundcloud(query)
         if sc_path and sc_info:
@@ -385,7 +397,7 @@ async def _resolve_query(query: str, platform: str, msg: Message):
                 LOG.info("SoundCloud found: %s", sc_info.get("title"))
                 return sc_info, sc_path, is_stream
     except Exception:
-        LOG.debug("SoundCloud search+download failed for: %s", query)
+        LOG.debug("SoundCloud failed for: %s", query)
 
     # 3. JioSaavn
     LOG.info("SoundCloud failed, trying JioSaavn for: %s", query)
@@ -394,7 +406,7 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         if js_path and js_info:
             import os as _os
             if _os.path.isfile(js_path):
-                LOG.info("JioSaavn found and downloaded: %s", js_info.get("title"))
+                LOG.info("JioSaavn found: %s", js_info.get("title"))
                 info = {
                     "title": js_info.get("title", "Unknown"),
                     "url": js_info.get("url", ""),
@@ -405,13 +417,12 @@ async def _resolve_query(query: str, platform: str, msg: Message):
                 }
                 return info, js_path, False
     except Exception:
-        LOG.debug("JioSaavn search+download failed for: %s", query)
+        LOG.debug("JioSaavn download failed for: %s", query)
 
     # 3b. JioSaavn stream URL
     try:
         js_search = await search_jiosaavn(query)
         if js_search and js_search.get("download_url"):
-            LOG.info("JioSaavn stream URL for: %s", js_search.get("title"))
             info = {
                 "title": js_search.get("title", "Unknown"),
                 "url": js_search.get("url", ""),
@@ -422,19 +433,36 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             }
             return info, js_search["download_url"], True
     except Exception:
-        LOG.debug("JioSaavn stream URL fallback failed for: %s", query)
+        LOG.debug("JioSaavn stream URL failed for: %s", query)
 
-    # 4. YouTube proxy (stream URL — last resort)
-    LOG.info("All failed, trying YouTube proxy stream for: %s", query)
-    yt = await search_youtube(query)
-    if yt:
-        if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
-            raise ValueError(
-                f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, play করা যাবে না।"
-            )
-        media_path, is_stream = await _get_audio_media(yt["url"])
-        if media_path:
-            return yt, media_path, is_stream
+    # 4. Apple Music (search by query as if it were a track name)
+    LOG.info("JioSaavn failed, trying Apple Music for: %s", query)
+    try:
+        apple_track = await get_apple_music_track(f"https://music.apple.com/search?term={query}")
+        if apple_track and apple_track.get("query"):
+            # Apple Music gives us a query, search YouTube/SoundCloud with it
+            am_query = apple_track["query"]
+            am_path, am_info = await search_and_download_audio(am_query)
+            if am_path and os.path.isfile(str(am_path)):
+                if am_info:
+                    am_info["platform"] = "apple_music"
+                return (am_info or apple_track), am_path, False
+    except Exception:
+        LOG.debug("Apple Music failed for: %s", query)
+
+    # 5. Spotify (search by query)
+    LOG.info("Apple Music failed, trying Spotify for: %s", query)
+    try:
+        spotify_track = await get_spotify_track(f"https://open.spotify.com/search/{query}")
+        if spotify_track and spotify_track.get("query"):
+            sp_query = spotify_track["query"]
+            sp_path, sp_info = await search_and_download_audio(sp_query)
+            if sp_path and os.path.isfile(str(sp_path)):
+                if sp_info:
+                    sp_info["platform"] = "spotify"
+                return (sp_info or spotify_track), sp_path, False
+    except Exception:
+        LOG.debug("Spotify failed for: %s", query)
 
     raise ValueError("কোনো result পাওয়া যায়নি। অন্য keyword দিয়ে চেষ্টা করুন।")
 
