@@ -940,14 +940,17 @@ async def _on_stream_end(client, update):
             return None, False
 
         # Build platform order: last successful first, then others
+        # Default order: YouTube → SoundCloud → JioSaavn
         platform_order = []
         if last_platform == "soundcloud":
-            platform_order = ["soundcloud", "jiosaavn", "youtube"]
+            platform_order = ["soundcloud", "youtube", "jiosaavn"]
         elif last_platform == "jiosaavn":
-            platform_order = ["jiosaavn", "soundcloud", "youtube"]
+            platform_order = ["jiosaavn", "youtube", "soundcloud"]
+        elif last_platform == "youtube":
+            platform_order = ["youtube", "soundcloud", "jiosaavn"]
         else:
-            # Default: SoundCloud first (it's working on Railway based on logs)
-            platform_order = ["soundcloud", "jiosaavn", "youtube"]
+            # Default: YouTube first
+            platform_order = ["youtube", "soundcloud", "jiosaavn"]
 
         LOG.info("Auto-next for %s: trying platforms in order %s for '%s'",
                  chat_id, platform_order, next_item.title)

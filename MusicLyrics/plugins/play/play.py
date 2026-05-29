@@ -367,12 +367,28 @@ async def _resolve_query(query: str, platform: str, msg: Message):
         return info, media_path, is_stream
 
     # -- Plain text query --
-    # Priority: SoundCloud (fastest on Railway) → JioSaavn → YouTube
-    # SoundCloud is moved first because YouTube proxies are blocked on Railway
-    # and JioSaavn CDN is also often slow.
+    # Priority: YouTube (proxy) → SoundCloud → JioSaavn
 
-    # 1. SoundCloud (fastest — direct download, works reliably on Railway)
-    LOG.info("Query search: trying SoundCloud first for: %s", query)
+    # 1. YouTube search + stream/download (primary — uses proxy)
+    LOG.info("Query search: trying YouTube first for: %s", query)
+    yt = await search_youtube(query)
+    if yt:
+        if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
+            raise ValueError(
+                f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, play করা যাবে না।"
+            )
+        media_path, is_stream = await _get_audio_media(yt["url"])
+        if media_path:
+            return yt, media_path, is_stream
+
+    # 2. YouTube yt-dlp combined search+download (bypasses IP blocks)
+    LOG.info("YouTube stream failed, trying yt-dlp search+download for: %s", query)
+    filepath, dl_info = await search_and_download_audio(query)
+    if filepath and dl_info:
+        return dl_info, filepath, False
+
+    # 3. SoundCloud
+    LOG.info("YouTube failed, trying SoundCloud for: %s", query)
     try:
         sc_path, sc_info = await search_and_download_soundcloud(query)
         if sc_path and sc_info:
@@ -383,8 +399,8 @@ async def _resolve_query(query: str, platform: str, msg: Message):
     except Exception:
         LOG.debug("SoundCloud search+download failed for: %s", query)
 
-    # 2. JioSaavn (best for Indian/Bollywood songs, direct CDN download)
-    LOG.info("SoundCloud unavailable, trying JioSaavn for: %s", query)
+    # 4. JioSaavn
+    LOG.info("SoundCloud failed, trying JioSaavn for: %s", query)
     try:
         js_path, js_info = await search_and_download_jiosaavn(query)
         if js_path and js_info:
@@ -403,7 +419,7 @@ async def _resolve_query(query: str, platform: str, msg: Message):
     except Exception:
         LOG.debug("JioSaavn search+download failed for: %s", query)
 
-    # 3. JioSaavn stream URL (if download failed but search found something)
+    # 5. JioSaavn stream URL (if download failed but search found something)
     try:
         js_search = await search_jiosaavn(query)
         if js_search and js_search.get("download_url"):
@@ -419,24 +435,6 @@ async def _resolve_query(query: str, platform: str, msg: Message):
             return info, js_search["download_url"], True
     except Exception:
         LOG.debug("JioSaavn stream URL fallback failed for: %s", query)
-
-    # 4. YouTube search + stream/download (last — proxies blocked on Railway)
-    LOG.info("SoundCloud+JioSaavn unavailable, trying YouTube for: %s", query)
-    yt = await search_youtube(query)
-    if yt:
-        if yt["duration"] > Config.DURATION_LIMIT_MIN * 60 and yt["duration"] > 0:
-            raise ValueError(
-                f"গানটি {Config.DURATION_LIMIT_MIN} মিনিটের বেশি, play করা যাবে না।"
-            )
-        media_path, is_stream = await _get_audio_media(yt["url"])
-        if media_path:
-            return yt, media_path, is_stream
-
-    # 5. YouTube yt-dlp combined search+download (bypasses IP blocks)
-    LOG.info("YouTube stream failed, trying yt-dlp search+download for: %s", query)
-    filepath, dl_info = await search_and_download_audio(query)
-    if filepath and dl_info:
-        return dl_info, filepath, False
 
     raise ValueError("কোনো result পাওয়া যায়নি। অন্য keyword দিয়ে চেষ্টা করুন।")
 
