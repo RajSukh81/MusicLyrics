@@ -60,6 +60,16 @@ _progress_tasks: dict[int, asyncio.Task] = {}
 # Track which platform last succeeded for each chat — prioritize it next time
 _last_successful_platform: dict[int, str] = {}
 
+# Per-chat lock to prevent race conditions between auto-next and manual skip/stop
+_skip_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_skip_lock(chat_id: int) -> asyncio.Lock:
+    """Get or create a per-chat skip lock."""
+    if chat_id not in _skip_locks:
+        _skip_locks[chat_id] = asyncio.Lock()
+    return _skip_locks[chat_id]
+
 # Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
 if pytgcalls is None:
     LOG.warning("STRING_SESSION not set -- music streaming features are disabled.")
@@ -124,23 +134,27 @@ def _get_next_color() -> str:
 
 
 def _control_keyboard(color: str = "") -> InlineKeyboardMarkup:
-    """Build the control keyboard with optional color indicator."""
+    """Build the control keyboard with colorful animated buttons."""
     if not color:
         color = "🎵"
+    # Each button gets a different color from the palette for a vibrant look
+    colors = ["🔴", "🟡", "🟢", "🔵", "🟣", "🟠", "💎", "⚪"]
+    ci = _current_color_index
+    c = lambda i: colors[(ci + i) % len(colors)]
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(f"⏸ Pause", callback_data="ctl_pause"),
-                InlineKeyboardButton(f"▶️ Resume", callback_data="ctl_resume"),
-                InlineKeyboardButton(f"⏭ Skip", callback_data="ctl_skip"),
+                InlineKeyboardButton(f"{c(0)} ⏸ Pause", callback_data="ctl_pause"),
+                InlineKeyboardButton(f"{c(1)} ▶️ Resume", callback_data="ctl_resume"),
+                InlineKeyboardButton(f"{c(2)} ⏭ Skip", callback_data="ctl_skip"),
             ],
             [
-                InlineKeyboardButton(f"⏹ Stop", callback_data="ctl_stop"),
-                InlineKeyboardButton(f"📜 Queue", callback_data="ctl_queue"),
-                InlineKeyboardButton(f"🔁 Loop", callback_data="ctl_loop"),
+                InlineKeyboardButton(f"{c(3)} ⏹ Stop", callback_data="ctl_stop"),
+                InlineKeyboardButton(f"{c(4)} 📜 Queue", callback_data="ctl_queue"),
+                InlineKeyboardButton(f"{c(5)} 🔁 Loop", callback_data="ctl_loop"),
             ],
             [
-                InlineKeyboardButton(f"{color} Add to Group", url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true"),
+                InlineKeyboardButton(f"{c(6)} Add to Group", url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true"),
             ],
         ]
     )
@@ -177,8 +191,8 @@ async def _check_stream_url(url: str) -> bool:
                         LOG.warning("Stream URL failed (HTTP %d): %s", resp.status, url[:80])
                         return False
                 except asyncio.TimeoutError:
-                    LOG.warning("Stream URL check timed out: %s", url[:80])
-                    return False  # Timeout likely means URL is dead
+                    LOG.warning("Stream URL check timed out (%s): %s", method.__name__, url[:80])
+                    continue  # Try next method (GET) instead of returning False immediately
                 except Exception:
                     continue
     except Exception:
@@ -379,7 +393,7 @@ async def _start_progress_timer(chat_id: int, duration: int):
     async def _update_progress():
         """Periodically update the Now Playing message with progress."""
         update_interval = 15  # Update every 15 seconds
-        color_cycle_interval = 5  # Change color every 5 updates (75 seconds)
+        color_cycle_interval = 2  # Change color every 2 updates (30 seconds)
         update_count = 0
         
         while True:
@@ -544,7 +558,11 @@ async def stream_audio(
             )
             try:
                 from MusicLyrics.plugins.play.platforms.youtube import download_audio, search_and_download_audio
-                local_path = await download_audio(media_path)
+                local_path = None
+                try:
+                    local_path = await download_audio(media_path)
+                except Exception:
+                    LOG.debug("download_audio(url) failed for %s", chat_id)
                 if not local_path or not os.path.isfile(str(local_path)):
                     # download_audio with URL failed, try search+download with title
                     if title:
@@ -785,29 +803,58 @@ async def leave_voice_chat(chat_id: int) -> None:
     # Stop progress timer
     _stop_progress_timer(chat_id)
 
-    # Try leaving with retries — py-tgcalls 2.2.x uses leave_call(), older uses leave_group_call()
+    # Try leaving with retries — try BOTH methods on each attempt
     left = False
     for attempt in range(3):
+        # Try leave_call (py-tgcalls 2.2.x)
         try:
             if hasattr(pytgcalls, 'leave_call'):
                 await pytgcalls.leave_call(chat_id)
-            else:
-                await pytgcalls.leave_group_call(chat_id)
-            LOG.info("Left voice chat: %s (attempt %d)", chat_id, attempt + 1)
-            left = True
-            break
+                LOG.info("Left voice chat via leave_call: %s (attempt %d)", chat_id, attempt + 1)
+                left = True
+                break
         except Exception as e:
-            LOG.warning("Leave VC attempt %d failed for %s: %s", attempt + 1, chat_id, e)
-            if attempt < 2:
-                await asyncio.sleep(1)
+            LOG.debug("leave_call attempt %d failed for %s: %s", attempt + 1, chat_id, e)
+
+        # Try leave_group_call (older py-tgcalls)
+        try:
+            if hasattr(pytgcalls, 'leave_group_call'):
+                await pytgcalls.leave_group_call(chat_id)
+                LOG.info("Left voice chat via leave_group_call: %s (attempt %d)", chat_id, attempt + 1)
+                left = True
+                break
+        except Exception as e:
+            LOG.debug("leave_group_call attempt %d failed for %s: %s", attempt + 1, chat_id, e)
+
+        # Try playing empty/silent stream then leaving (force disconnect)
+        if attempt == 2:
+            try:
+                # Last resort: try to force leave by playing nothing
+                if hasattr(pytgcalls, 'played_time'):
+                    await pytgcalls.leave_call(chat_id)
+                    left = True
+                    break
+            except Exception:
+                pass
+
+        if attempt < 2:
+            await asyncio.sleep(1)
 
     if not left:
-        LOG.error("Could not leave voice chat %s after 3 attempts", chat_id)
+        LOG.error("Could not leave voice chat %s after 3 attempts — forcing cleanup", chat_id)
 
+    # Always clean up state regardless of whether leave succeeded
     _active_chats.discard(chat_id)
     # Clear now playing messages tracking
     if chat_id in _now_playing_messages:
+        for msg in _now_playing_messages[chat_id]:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
         del _now_playing_messages[chat_id]
+    # Clean up skip lock
+    _skip_locks.pop(chat_id, None)
     await clear_queue(chat_id)
 
 
@@ -843,47 +890,59 @@ async def _on_stream_end(client, update):
 
     LOG.info("Stream end event for chat %s", chat_id)
 
-    # Stop the progress timer
-    _stop_progress_timer(chat_id)
+    # Acquire per-chat skip lock to prevent race conditions with manual skip/stop
+    lock = _get_skip_lock(chat_id)
+    if lock.locked():
+        LOG.info("Skip lock held for %s — manual skip/stop in progress, ignoring auto-next", chat_id)
+        return
 
-    # Get the finished track info BEFORE cleaning up
-    finished = await get_current(chat_id)
-    finished_title = finished.title if finished else "Unknown"
-    finished_requester = finished.requester if finished else ""
+    async with lock:
+        # Re-check if chat is still active (may have been stopped while waiting for lock)
+        if chat_id not in _active_chats:
+            LOG.info("Chat %s no longer active, skipping auto-next", chat_id)
+            return
 
-    # Clean up the finished track's file (if it was a local download)
-    if finished and not finished.is_stream_url and finished.media_path:
-        cleanup(finished.media_path)
+        # Stop the progress timer
+        _stop_progress_timer(chat_id)
 
-    # Delete previous "Now Playing" / thumbnail messages for this chat
-    if chat_id in _now_playing_messages:
-        for old_msg in _now_playing_messages[chat_id]:
+        # Get the finished track info BEFORE cleaning up
+        finished = await get_current(chat_id)
+        finished_title = finished.title if finished else "Unknown"
+        finished_requester = finished.requester if finished else ""
+
+        # Clean up the finished track's file (if it was a local download)
+        if finished and not finished.is_stream_url and finished.media_path:
+            cleanup(finished.media_path)
+
+        # Delete previous "Now Playing" / thumbnail messages for this chat
+        if chat_id in _now_playing_messages:
+            for old_msg in _now_playing_messages[chat_id]:
+                try:
+                    await old_msg.delete()
+                    LOG.debug("Deleted previous Now Playing message in %s", chat_id)
+                except Exception:
+                    pass
+            _now_playing_messages[chat_id].clear()
+
+        next_item = await skip_queue(chat_id, force=False)
+        if next_item is None:
+            # Queue is empty — send a nice "song finished" message, then leave VC
             try:
-                await old_msg.delete()
-                LOG.debug("Deleted previous Now Playing message in %s", chat_id)
+                finish_msg = await bot.send_message(
+                    chat_id,
+                    f"✅ **গান শেষ হয়ে গেছে!**\n\n"
+                    f"🎵 **শেষ গান:** {finished_title}\n"
+                    f"👤 **শুনিয়েছিলেন:** {finished_requester}\n\n"
+                    f"🔄 আবার গান শুনতে `/play` কমান্ড দিন।\n"
+                    f"📜 গানের তালিকা দেখতে `/queue` দিন।",
+                )
+                await auto_delete_service(finish_msg)
             except Exception:
                 pass
-        _now_playing_messages[chat_id].clear()
-
-    next_item = await skip_queue(chat_id)
-    if next_item is None:
-        # Queue is empty — send a nice "song finished" message, then leave VC
-        try:
-            finish_msg = await bot.send_message(
-                chat_id,
-                f"✅ **গান শেষ হয়ে গেছে!**\n\n"
-                f"🎵 **শেষ গান:** {finished_title}\n"
-                f"👤 **শুনিয়েছিলেন:** {finished_requester}\n\n"
-                f"🔄 আবার গান শুনতে `/play` কমান্ড দিন।\n"
-                f"📜 গানের তালিকা দেখতে `/queue` দিন।",
-            )
-            await auto_delete_service(finish_msg)
-        except Exception:
-            pass
-        # Now leave the voice chat
-        await leave_voice_chat(chat_id)
-        LOG.info("Queue empty, left voice chat in %s", chat_id)
-        return
+            # Now leave the voice chat
+            await leave_voice_chat(chat_id)
+            LOG.info("Queue empty, left voice chat in %s", chat_id)
+            return
 
     # Play next track
     try:
@@ -1091,7 +1150,29 @@ if pytgcalls is not None:
             LOG.debug("Method 4 (raw on_update) failed: %s", e)
 
     if not _registered:
-        LOG.warning("Could not register stream-end callback -- auto-skip will not work.")
+        LOG.warning("Could not register stream-end callback -- enabling timer-based fallback.")
+
+        # FALLBACK: Timer-based stream-end detection
+        # Polls active chats and checks if track duration has elapsed
+        async def _fallback_stream_end_checker():
+            """Periodically check if tracks have finished playing when callback isn't available."""
+            while True:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                try:
+                    for chat_id in list(_active_chats):
+                        if chat_id not in _play_start_times or chat_id not in _play_durations:
+                            continue
+                        elapsed = time.time() - _play_start_times[chat_id]
+                        duration = _play_durations[chat_id]
+                        # If track has been playing for longer than its duration + 5s buffer
+                        if duration > 0 and elapsed > duration + 5:
+                            LOG.info("Fallback timer detected stream end for %s (elapsed=%.0f, duration=%d)",
+                                     chat_id, elapsed, duration)
+                            await _on_stream_end(None, chat_id)
+                except Exception as e:
+                    LOG.debug("Fallback stream-end checker error: %s", e)
+
+        asyncio.get_event_loop().create_task(_fallback_stream_end_checker())
 
     # ── ALSO register on_kicked / on_left to clean up ──
     try:

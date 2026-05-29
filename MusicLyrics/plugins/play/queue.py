@@ -86,16 +86,27 @@ async def get_current(chat_id: int) -> Optional[QueueItem]:
     return cq.current
 
 
-async def skip_queue(chat_id: int) -> Optional[QueueItem]:
-    """Advance to the next track; return it or ``None`` if queue ends."""
-    cq = await get_chat_queue(chat_id)
-    if cq.loop_mode:
-        return cq.current  # replay same track
+async def skip_queue(chat_id: int, force: bool = False) -> Optional[QueueItem]:
+    """Advance to the next track; return it or ``None`` if queue ends.
 
-    cq.current_index += 1
-    if cq.current_index >= len(cq.items):
-        return None  # queue exhausted
-    return cq.current
+    If *force* is True, skip even when loop mode is on (user pressed Skip).
+    Auto-next (stream-end) should call with force=False so loop replays.
+    """
+    async with _lock:
+        cq = _queues.get(chat_id)
+        if cq is None:
+            return None
+        if cq.loop_mode and not force:
+            return cq.current  # replay same track
+
+        # If force-skipping out of loop, disable loop so auto-next works normally
+        if cq.loop_mode and force:
+            cq.loop_mode = False
+
+        cq.current_index += 1
+        if cq.current_index >= len(cq.items):
+            return None  # queue exhausted
+        return cq.current
 
 
 async def clear_queue(chat_id: int) -> None:
