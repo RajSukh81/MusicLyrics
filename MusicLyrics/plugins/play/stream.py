@@ -57,6 +57,9 @@ _play_durations: dict[int, int] = {}
 # Active progress update tasks per chat
 _progress_tasks: dict[int, asyncio.Task] = {}
 
+# Track which platform last succeeded for each chat — prioritize it next time
+_last_successful_platform: dict[int, str] = {}
+
 # Guard: if pytgcalls is None (no STRING_SESSION), music features are disabled
 if pytgcalls is None:
     LOG.warning("STRING_SESSION not set -- music streaming features are disabled.")
@@ -527,6 +530,11 @@ async def stream_audio(
         await _do_play(chat_id, audio)
         LOG.info("Streaming audio in %s: %s (%s)",
                  chat_id, title, media_path[:100])
+        # Track which platform succeeded for auto-next priority
+        if "soundcloud" in media_path.lower() or "sndcdn" in media_path.lower():
+            _last_successful_platform[chat_id] = "soundcloud"
+        elif "jiosaavn" in media_path.lower() or "saavn" in media_path.lower():
+            _last_successful_platform[chat_id] = "jiosaavn"
     except Exception as exc:
         # If stream URL failed, try downloading and playing local file
         if _is_url(media_path):
@@ -879,27 +887,105 @@ async def _on_stream_end(client, update):
 
     # Play next track
     try:
-        # Re-fetch stream URL if it was a stream URL (they expire)
-        if next_item.is_stream_url:
+        # Always do a fresh search for queued tracks — stream URLs expire fast
+        # Use the last successful platform first to avoid slow fallback chains
+        last_platform = _last_successful_platform.get(chat_id, "")
+        fresh_path = None
+        fresh_is_stream = False
+
+        # Helper: try SoundCloud
+        async def _try_soundcloud(title):
+            try:
+                sc_path, sc_info = await search_and_download_soundcloud(title)
+                if sc_path:
+                    if sc_info and sc_info.get("_is_stream_url"):
+                        return sc_path, True
+                    if os.path.isfile(str(sc_path)):
+                        return sc_path, False
+            except Exception:
+                pass
+            return None, False
+
+        # Helper: try JioSaavn
+        async def _try_jiosaavn(title):
+            try:
+                js_path, js_info = await search_and_download_jiosaavn(title)
+                if js_path and os.path.isfile(str(js_path)):
+                    return js_path, False
+            except Exception:
+                pass
+            return None, False
+
+        # Helper: try YouTube
+        async def _try_youtube(item):
             try:
                 from MusicLyrics.plugins.play.platforms.youtube import (
-                    get_audio_stream_url, get_video_stream_url, is_youtube_url
+                    get_audio_stream_url, get_video_stream_url,
+                    is_youtube_url, search_and_download_audio as yt_search_dl,
                 )
-                if is_youtube_url(next_item.url):
-                    if next_item.stream_type == "video":
-                        new_url = await get_video_stream_url(next_item.url)
+                # Try re-fetch stream URL first
+                if is_youtube_url(item.url):
+                    if item.stream_type == "video":
+                        new_url = await get_video_stream_url(item.url)
                     else:
-                        new_url = await get_audio_stream_url(next_item.url)
+                        new_url = await get_audio_stream_url(item.url)
                     if new_url:
-                        next_item.media_path = new_url
-                        LOG.info("Re-fetched stream URL for queued track: %s", next_item.title)
-                elif is_soundcloud_url(next_item.url):
-                    new_url = await get_soundcloud_stream_url(next_item.url)
-                    if new_url:
-                        next_item.media_path = new_url
-                        LOG.info("Re-fetched SoundCloud stream URL for: %s", next_item.title)
+                        return new_url, True
+                # Try search+download by title
+                path, info = await yt_search_dl(item.title)
+                if path and os.path.isfile(str(path)):
+                    return path, False
             except Exception:
-                LOG.warning("Failed to re-fetch stream URL for: %s — will try playing with existing URL", next_item.title)
+                pass
+            return None, False
+
+        # Build platform order: last successful first, then others
+        platform_order = []
+        if last_platform == "soundcloud":
+            platform_order = ["soundcloud", "jiosaavn", "youtube"]
+        elif last_platform == "jiosaavn":
+            platform_order = ["jiosaavn", "soundcloud", "youtube"]
+        else:
+            # Default: SoundCloud first (it's working on Railway based on logs)
+            platform_order = ["soundcloud", "jiosaavn", "youtube"]
+
+        LOG.info("Auto-next for %s: trying platforms in order %s for '%s'",
+                 chat_id, platform_order, next_item.title)
+
+        for platform in platform_order:
+            if platform == "soundcloud":
+                fresh_path, fresh_is_stream = await _try_soundcloud(next_item.title)
+                if fresh_path:
+                    _last_successful_platform[chat_id] = "soundcloud"
+                    break
+            elif platform == "jiosaavn":
+                fresh_path, fresh_is_stream = await _try_jiosaavn(next_item.title)
+                if fresh_path:
+                    _last_successful_platform[chat_id] = "jiosaavn"
+                    break
+            elif platform == "youtube":
+                fresh_path, fresh_is_stream = await _try_youtube(next_item)
+                if fresh_path:
+                    _last_successful_platform[chat_id] = "youtube"
+                    break
+
+        if not fresh_path:
+            LOG.error("All platforms failed for auto-next: %s", next_item.title)
+            try:
+                err_msg = await bot.send_message(
+                    chat_id,
+                    f"❌ **পরের গানটি চলানো যায়নি:** {next_item.title}\n\n"
+                    "Voice chat থেকে বের হচ্ছে। আবার `/play` দিন।",
+                )
+                await auto_delete_service(err_msg)
+            except Exception:
+                pass
+            await leave_voice_chat(chat_id)
+            return
+
+        # Update media path and play
+        next_item.media_path = fresh_path
+        next_item.is_stream_url = fresh_is_stream
 
         if next_item.stream_type == "video":
             await stream_video(
@@ -914,10 +1000,10 @@ async def _on_stream_end(client, update):
 
         dur = format_duration(next_item.duration)
         color = _get_next_color()
-        
+
         # Start progress timer for the new track
         await _start_progress_timer(chat_id, next_item.duration)
-        
+
         np_msg = await bot.send_message(
             chat_id,
             f"▶️ **এখন চলছে**\n\n"
