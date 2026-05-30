@@ -132,10 +132,10 @@ async def skip_cmd(client: Client, message: Message):
             dur = format_duration(next_item.duration)
             color = _get_next_color()
             reply = await message.reply_text(
-                f"⏭ **Skipped!**\n\n"
-                f"▶️ **এখন চলছে:** {next_item.title}\n"
-                f"⏱ **Duration:** {dur}\n"
-                f"👤 **Requested by:** {next_item.requester}",
+                f"⏭ **ꜱᴋɪᴘᴘᴇᴅ!**\n\n"
+                f"> 🎵  **ᴛɪᴛʟᴇ :** {next_item.title}\n"
+                f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}\n"
+                f"> 👤  **ʀᴇǫᴜᴇꜱᴛᴇᴅ :** {next_item.requester}",
                 reply_markup=_control_keyboard(color),
             )
             # Track this new "Now Playing" message
@@ -282,10 +282,10 @@ async def nowplaying_cmd(client: Client, message: Message):
     kind = "🎬 Video" if current.stream_type == "video" else "🎵 Audio"
     color = _get_next_color()
     text = (
-        f"**▶️ Now Playing**\n\n"
-        f"**{kind}:** [{current.title}]({current.url})\n"
-        f"**⏱ Duration:** {dur}\n"
-        f"**👤 Requested by:** {current.requester}"
+        f"🎧 **ᴘʟᴀʏʙᴀᴄᴋ ᴀᴄᴛɪᴠᴀᴛᴇᴅ | ᴇɴᴊᴏʏ ᴛʜᴇ ᴍᴜꜱɪᴄ**\n\n"
+        f"> 🎵  **ᴛɪᴛʟᴇ :** [{current.title}]({current.url})\n"
+        f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}\n"
+        f"> 👤  **ʀᴇǫᴜᴇꜱᴛᴇᴅ :** {current.requester}"
     )
     if current.thumbnail:
         reply = await bot.send_photo(
@@ -422,9 +422,9 @@ async def cb_skip(client: Client, callback: CallbackQuery):
             dur = format_duration(next_item.duration)
             color = _get_next_color()
             reply = await callback.message.reply_text(
-                f"⏭ **Skipped!**\n\n"
-                f"▶️ **এখন চলছে:** {next_item.title}\n"
-                f"⏱ **Duration:** {dur}",
+                f"⏭ **ꜱᴋɪᴘᴘᴇᴅ!**\n\n"
+                f"> 🎵  **ᴛɪᴛʟᴇ :** {next_item.title}\n"
+                f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}",
                 reply_markup=_control_keyboard(color),
             )
             # Track this new "Now Playing" message

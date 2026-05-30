@@ -592,11 +592,10 @@ async def play_command(client: Client, message: Message):
     dur = format_duration(duration)
     color = _get_next_color()
     text = (
-        f"▶️ **এখন চলছে**\n\n"
-        f"🎵 **Title:** [{title}]({url})\n"
-        f"⏱ **Duration:** {dur}\n"
-        f"🎤 **Channel:** {channel}\n"
-        f"👤 **Requested by:** {requester}"
+        f"🎧 **ᴘʟᴀʏʙᴀᴄᴋ ᴀᴄᴛɪᴠᴀᴛᴇᴅ | ᴇɴᴊᴏʏ ᴛʜᴇ ᴍᴜꜱɪᴄ**\n\n"
+        f"> 🎵  **ᴛɪᴛʟᴇ :** [{title}]({url})\n"
+        f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}\n"
+        f"> 👤  **ʀᴇǫᴜᴇꜱᴛᴇᴅ :** {requester}"
     )
 
     try:

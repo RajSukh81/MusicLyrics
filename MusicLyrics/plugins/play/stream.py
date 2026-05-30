@@ -116,54 +116,80 @@ except ImportError:
     _STREAM_END_TYPE = None
 
 
-# ── Button style cycling ─────────────────────────────────────────────────────
-# Clean icon-style buttons that rotate through color themes
+# ── Button color themes that rotate ──────────────────────────────────────────
+# Each theme defines emoji icons + background colors for buttons
+# Colors swap on each progress update cycle for visual effect
 _BUTTON_THEMES = [
-    # Each theme is a tuple of (play, pause, loop, skip, stop, label)
-    {"play": "▷",  "pause": "‖",  "skip": "▷▷❙", "stop": "□",  "queue": "☰",  "loop": "⟳",  "accent": "◈"},
-    {"play": "►",  "pause": "❚❚", "skip": "⏭",   "stop": "⏹",  "queue": "≡",  "loop": "↻",  "accent": "◆"},
-    {"play": "⏵",  "pause": "⏸",  "skip": "⏩",   "stop": "⏏",  "queue": "☷",  "loop": "🔄", "accent": "✦"},
-    {"play": "▶",  "pause": "⫼",  "skip": "➤➤",  "stop": "■",  "queue": "⊞",  "loop": "⥀",  "accent": "❖"},
+    {
+        "resume": "🌙", "mute": "🔇", "song": "🎵", "skip": "🎶",
+        "tunes": "👹", "home": "🔮", "close": "🌙",
+        "bar_left": "🐻", "bar_dot": "🍃",
+        "label": "Theme 1",
+    },
+    {
+        "resume": "🦋", "mute": "🔕", "song": "🎧", "skip": "🎼",
+        "tunes": "🐉", "home": "🌍", "close": "🦋",
+        "bar_left": "🦊", "bar_dot": "🔥",
+        "label": "Theme 2",
+    },
+    {
+        "resume": "🌸", "mute": "🚫", "song": "🎹", "skip": "🎻",
+        "tunes": "🐺", "home": "💎", "close": "🌸",
+        "bar_left": "🐱", "bar_dot": "⭐",
+        "label": "Theme 3",
+    },
+    {
+        "resume": "🔮", "mute": "🔈", "song": "🎺", "skip": "🎷",
+        "tunes": "🐲", "home": "🌟", "close": "🔮",
+        "bar_left": "🐼", "bar_dot": "💫",
+        "label": "Theme 4",
+    },
 ]
 _current_theme_index: int = 0
 
 
 def _get_next_color() -> str:
-    """Advance theme and return accent character."""
+    """Advance theme index and return current theme label."""
     global _current_theme_index
-    theme = _BUTTON_THEMES[_current_theme_index % len(_BUTTON_THEMES)]
     _current_theme_index += 1
-    return theme["accent"]
+    return _BUTTON_THEMES[_current_theme_index % len(_BUTTON_THEMES)]["label"]
 
 
 def _get_current_theme() -> dict:
-    """Get the current button theme without advancing."""
+    """Get the current button theme."""
     return _BUTTON_THEMES[_current_theme_index % len(_BUTTON_THEMES)]
 
 
 def _control_keyboard(color: str = "") -> InlineKeyboardMarkup:
-    """Build the control keyboard with clean icon-style buttons.
+    """Build colorful control keyboard with emoji icons that change colors.
 
-    Style inspired by professional music bots — minimal, readable icons
-    that rotate through visual themes on each progress update.
+    Inspired by professional Telegram music bots with vibrant button styles.
+    Button emojis rotate through themes on each progress update.
     """
     t = _get_current_theme()
+    bot_username = bot.me.username if bot.me else "MusicLyrics"
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(f"{t['play']}  Play", callback_data="ctl_resume"),
-                InlineKeyboardButton(f"{t['pause']}  Pause", callback_data="ctl_pause"),
-                InlineKeyboardButton(f"{t['loop']}  Loop", callback_data="ctl_loop"),
-            ],
-            [
-                InlineKeyboardButton(f"{t['skip']}  Skip", callback_data="ctl_skip"),
-                InlineKeyboardButton(f"{t['stop']}  Stop", callback_data="ctl_stop"),
-                InlineKeyboardButton(f"{t['queue']}  Queue", callback_data="ctl_queue"),
+                InlineKeyboardButton(f"{t['resume']}", callback_data="ctl_resume"),
+                InlineKeyboardButton(f"{t['mute']}", callback_data="ctl_pause"),
+                InlineKeyboardButton(f"{t['song']}", callback_data="ctl_queue"),
+                InlineKeyboardButton(f"{t['skip']}", callback_data="ctl_skip"),
             ],
             [
                 InlineKeyboardButton(
-                    f"{t['accent']}  Add to Group",
-                    url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true",
+                    f"{t['tunes']}  TUNES 🎵",
+                    url=f"https://t.me/{bot_username}?startgroup=true",
+                ),
+                InlineKeyboardButton(
+                    f"{t['home']}  HOME",
+                    url=f"https://t.me/{bot_username}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"{t['close']}  ✧ CLOSE ✧",
+                    callback_data="ctl_stop",
                 ),
             ],
         ]
@@ -373,23 +399,21 @@ async def _do_play(chat_id: int, stream):
 # ── Progress Timer ────────────────────────────────────────────────────────────
 
 def _format_progress(elapsed: int, total: int) -> str:
-    """Format a progress bar string showing elapsed/total time."""
+    """Format a decorated progress bar matching professional music bot style."""
+    t = _get_current_theme()
     if total <= 0:
-        return f"⏱ {format_duration(elapsed)} / Live"
-    
+        return f"{t['bar_left']} {format_duration(elapsed)} {t['bar_dot']}━━━━━━━━━━━━ Live"
+
     elapsed_str = format_duration(elapsed)
     total_str = format_duration(total)
-    
-    # Create a visual progress bar
+
+    # Create visual progress bar with emoji decoration
     bar_length = 12
-    if total > 0:
-        progress = min(elapsed / total, 1.0)
-        filled = int(bar_length * progress)
-    else:
-        filled = 0
-    
-    bar = "▬" * filled + "⬤" + "▬" * (bar_length - filled)
-    return f"⏱ {elapsed_str} / {total_str}\n{bar}"
+    progress = min(elapsed / total, 1.0)
+    filled = int(bar_length * progress)
+
+    bar = "━" * filled + f" {t['bar_dot']} " + "━" * (bar_length - filled)
+    return f"{t['bar_left']}  {elapsed_str}  {bar}  {total_str}"
 
 
 async def _start_progress_timer(chat_id: int, duration: int):
@@ -435,14 +459,14 @@ async def _start_progress_timer(chat_id: int, duration: int):
                 color = "🎵"
             
             progress_text = _format_progress(elapsed, total)
-            
+
             dur = format_duration(total)
+            channel_text = getattr(current, 'channel', '') if hasattr(current, 'channel') else ''
             text = (
-                f"▶️ **এখন চলছে**\n\n"
-                f"🎵 **Title:** [{current.title}]({current.url})\n"
-                f"⏱ **Duration:** {dur}\n"
-                f"🎤 **Channel:** {getattr(current, 'channel', '') if hasattr(current, 'channel') else ''}\n"
-                f"👤 **Requested by:** {current.requester}\n\n"
+                f"🎧 **ᴘʟᴀʏʙᴀᴄᴋ ᴀᴄᴛɪᴠᴀᴛᴇᴅ | ᴇɴᴊᴏʏ ᴛʜᴇ ᴍᴜꜱɪᴄ**\n\n"
+                f"> 🎵  **ᴛɪᴛʟᴇ :** [{current.title}]({current.url})\n"
+                f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}\n"
+                f"> 👤  **ʀᴇǫᴜᴇꜱᴛᴇᴅ :** {current.requester}\n\n"
                 f"{progress_text}"
             )
             
@@ -1078,10 +1102,10 @@ async def _on_stream_end(client, update):
 
             np_msg = await bot.send_message(
                 chat_id,
-                f"▶️ **এখন চলছে**\n\n"
-                f"🎵 **Title:** {next_item.title}\n"
-                f"⏱ **Duration:** {dur}\n"
-                f"👤 **Requested by:** {next_item.requester}",
+                f"🎧 **ᴘʟᴀʏʙᴀᴄᴋ ᴀᴄᴛɪᴠᴀᴛᴇᴅ | ᴇɴᴊᴏʏ ᴛʜᴇ ᴍᴜꜱɪᴄ**\n\n"
+                f"> 🎵  **ᴛɪᴛʟᴇ :** {next_item.title}\n"
+                f"> ⏱  **ᴅᴜʀᴀᴛɪᴏɴ :** {dur}\n"
+                f"> 👤  **ʀᴇǫᴜᴇꜱᴛᴇᴅ :** {next_item.requester}",
                 reply_markup=_control_keyboard(color),
             )
             # Track this message so we can delete it when this track ends
