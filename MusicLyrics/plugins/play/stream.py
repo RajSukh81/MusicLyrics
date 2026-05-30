@@ -116,45 +116,55 @@ except ImportError:
     _STREAM_END_TYPE = None
 
 
-# ── Color cycling for control buttons ──────────────────────────────────────────
-_BUTTON_COLORS = [
-    # (emoji_color_name, button_suffix) — cycle through these
-    ("🔴", "🔴"), ("🟡", "🟡"), ("🟢", "🟢"), ("🔵", "🔵"),
-    ("🟣", "🟣"), ("🟠", "🟠"), ("⚪", "⚪"), ("💎", "💎"),
+# ── Button style cycling ─────────────────────────────────────────────────────
+# Clean icon-style buttons that rotate through color themes
+_BUTTON_THEMES = [
+    # Each theme is a tuple of (play, pause, loop, skip, stop, label)
+    {"play": "▷",  "pause": "‖",  "skip": "▷▷❙", "stop": "□",  "queue": "☰",  "loop": "⟳",  "accent": "◈"},
+    {"play": "►",  "pause": "❚❚", "skip": "⏭",   "stop": "⏹",  "queue": "≡",  "loop": "↻",  "accent": "◆"},
+    {"play": "⏵",  "pause": "⏸",  "skip": "⏩",   "stop": "⏏",  "queue": "☷",  "loop": "🔄", "accent": "✦"},
+    {"play": "▶",  "pause": "⫼",  "skip": "➤➤",  "stop": "■",  "queue": "⊞",  "loop": "⥀",  "accent": "❖"},
 ]
-_current_color_index: int = 0
+_current_theme_index: int = 0
 
 
 def _get_next_color() -> str:
-    """Get the next color emoji for button cycling."""
-    global _current_color_index
-    color = _BUTTON_COLORS[_current_color_index % len(_BUTTON_COLORS)][1]
-    _current_color_index += 1
-    return color
+    """Advance theme and return accent character."""
+    global _current_theme_index
+    theme = _BUTTON_THEMES[_current_theme_index % len(_BUTTON_THEMES)]
+    _current_theme_index += 1
+    return theme["accent"]
+
+
+def _get_current_theme() -> dict:
+    """Get the current button theme without advancing."""
+    return _BUTTON_THEMES[_current_theme_index % len(_BUTTON_THEMES)]
 
 
 def _control_keyboard(color: str = "") -> InlineKeyboardMarkup:
-    """Build the control keyboard with colorful animated buttons."""
-    if not color:
-        color = "🎵"
-    # Each button gets a different color from the palette for a vibrant look
-    colors = ["🔴", "🟡", "🟢", "🔵", "🟣", "🟠", "💎", "⚪"]
-    ci = _current_color_index
-    c = lambda i: colors[(ci + i) % len(colors)]
+    """Build the control keyboard with clean icon-style buttons.
+
+    Style inspired by professional music bots — minimal, readable icons
+    that rotate through visual themes on each progress update.
+    """
+    t = _get_current_theme()
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(f"{c(0)} ⏸ Pause", callback_data="ctl_pause"),
-                InlineKeyboardButton(f"{c(1)} ▶️ Resume", callback_data="ctl_resume"),
-                InlineKeyboardButton(f"{c(2)} ⏭ Skip", callback_data="ctl_skip"),
+                InlineKeyboardButton(f"{t['play']}  Play", callback_data="ctl_resume"),
+                InlineKeyboardButton(f"{t['pause']}  Pause", callback_data="ctl_pause"),
+                InlineKeyboardButton(f"{t['loop']}  Loop", callback_data="ctl_loop"),
             ],
             [
-                InlineKeyboardButton(f"{c(3)} ⏹ Stop", callback_data="ctl_stop"),
-                InlineKeyboardButton(f"{c(4)} 📜 Queue", callback_data="ctl_queue"),
-                InlineKeyboardButton(f"{c(5)} 🔁 Loop", callback_data="ctl_loop"),
+                InlineKeyboardButton(f"{t['skip']}  Skip", callback_data="ctl_skip"),
+                InlineKeyboardButton(f"{t['stop']}  Stop", callback_data="ctl_stop"),
+                InlineKeyboardButton(f"{t['queue']}  Queue", callback_data="ctl_queue"),
             ],
             [
-                InlineKeyboardButton(f"{c(6)} Add to Group", url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true"),
+                InlineKeyboardButton(
+                    f"{t['accent']}  Add to Group",
+                    url=f"https://t.me/{bot.me.username if bot.me else 'MusicLyrics'}?startgroup=true",
+                ),
             ],
         ]
     )
@@ -944,95 +954,144 @@ async def _on_stream_end(client, update):
             LOG.info("Queue empty, left voice chat in %s", chat_id)
             return
 
-    # Play next track
-    try:
-        # Always do a fresh search for queued tracks — stream URLs expire fast
-        # Use the last successful platform first to avoid slow fallback chains
-        last_platform = _last_successful_platform.get(chat_id, "")
-        fresh_path = None
-        fresh_is_stream = False
+        # Play next track (INSIDE lock to prevent race with manual skip)
+        try:
+            # Always do a fresh search for queued tracks — stream URLs expire fast
+            # Use the last successful platform first to avoid slow fallback chains
+            last_platform = _last_successful_platform.get(chat_id, "")
+            fresh_path = None
+            fresh_is_stream = False
 
-        # Helper: try SoundCloud
-        async def _try_soundcloud(title):
-            try:
-                sc_path, sc_info = await search_and_download_soundcloud(title)
-                if sc_path:
-                    if sc_info and sc_info.get("_is_stream_url"):
-                        return sc_path, True
-                    if os.path.isfile(str(sc_path)):
-                        return sc_path, False
-            except Exception:
-                pass
-            return None, False
+            # Helper: try SoundCloud
+            async def _try_soundcloud(title):
+                try:
+                    sc_path, sc_info = await search_and_download_soundcloud(title)
+                    if sc_path:
+                        if sc_info and sc_info.get("_is_stream_url"):
+                            return sc_path, True
+                        if os.path.isfile(str(sc_path)):
+                            return sc_path, False
+                except Exception:
+                    pass
+                return None, False
 
-        # Helper: try JioSaavn
-        async def _try_jiosaavn(title):
-            try:
-                js_path, js_info = await search_and_download_jiosaavn(title)
-                if js_path and os.path.isfile(str(js_path)):
-                    return js_path, False
-            except Exception:
-                pass
-            return None, False
+            # Helper: try JioSaavn
+            async def _try_jiosaavn(title):
+                try:
+                    js_path, js_info = await search_and_download_jiosaavn(title)
+                    if js_path and os.path.isfile(str(js_path)):
+                        return js_path, False
+                except Exception:
+                    pass
+                return None, False
 
-        # Helper: try YouTube
-        async def _try_youtube(item):
-            try:
-                from MusicLyrics.plugins.play.platforms.youtube import (
-                    get_audio_stream_url, get_video_stream_url,
-                    is_youtube_url, search_and_download_audio as yt_search_dl,
+            # Helper: try YouTube
+            async def _try_youtube(item):
+                try:
+                    from MusicLyrics.plugins.play.platforms.youtube import (
+                        get_audio_stream_url, get_video_stream_url,
+                        is_youtube_url, search_and_download_audio as yt_search_dl,
+                    )
+                    # Try re-fetch stream URL first
+                    if is_youtube_url(item.url):
+                        if item.stream_type == "video":
+                            new_url = await get_video_stream_url(item.url)
+                        else:
+                            new_url = await get_audio_stream_url(item.url)
+                        if new_url:
+                            return new_url, True
+                    # Try search+download by title
+                    path, info = await yt_search_dl(item.title)
+                    if path and os.path.isfile(str(path)):
+                        return path, False
+                except Exception:
+                    pass
+                return None, False
+
+            # Build platform order: last successful first, then others
+            # Default order: YouTube → SoundCloud → JioSaavn
+            platform_order = []
+            if last_platform == "soundcloud":
+                platform_order = ["soundcloud", "youtube", "jiosaavn"]
+            elif last_platform == "jiosaavn":
+                platform_order = ["jiosaavn", "youtube", "soundcloud"]
+            elif last_platform == "youtube":
+                platform_order = ["youtube", "soundcloud", "jiosaavn"]
+            else:
+                # Default: YouTube first
+                platform_order = ["youtube", "soundcloud", "jiosaavn"]
+
+            LOG.info("Auto-next for %s: trying platforms in order %s for '%s'",
+                     chat_id, platform_order, next_item.title)
+
+            for platform in platform_order:
+                if platform == "soundcloud":
+                    fresh_path, fresh_is_stream = await _try_soundcloud(next_item.title)
+                    if fresh_path:
+                        _last_successful_platform[chat_id] = "soundcloud"
+                        break
+                elif platform == "jiosaavn":
+                    fresh_path, fresh_is_stream = await _try_jiosaavn(next_item.title)
+                    if fresh_path:
+                        _last_successful_platform[chat_id] = "jiosaavn"
+                        break
+                elif platform == "youtube":
+                    fresh_path, fresh_is_stream = await _try_youtube(next_item)
+                    if fresh_path:
+                        _last_successful_platform[chat_id] = "youtube"
+                        break
+
+            if not fresh_path:
+                LOG.error("All platforms failed for auto-next: %s", next_item.title)
+                try:
+                    err_msg = await bot.send_message(
+                        chat_id,
+                        f"❌ **পরের গানটি চলানো যায়নি:** {next_item.title}\n\n"
+                        "Voice chat থেকে বের হচ্ছে। আবার `/play` দিন।",
+                    )
+                    await auto_delete_service(err_msg)
+                except Exception:
+                    pass
+                await leave_voice_chat(chat_id)
+                return
+
+            # Update media path and play
+            next_item.media_path = fresh_path
+            next_item.is_stream_url = fresh_is_stream
+
+            if next_item.stream_type == "video":
+                await stream_video(
+                    chat_id, next_item.media_path,
+                    title=next_item.title, duration=next_item.duration,
                 )
-                # Try re-fetch stream URL first
-                if is_youtube_url(item.url):
-                    if item.stream_type == "video":
-                        new_url = await get_video_stream_url(item.url)
-                    else:
-                        new_url = await get_audio_stream_url(item.url)
-                    if new_url:
-                        return new_url, True
-                # Try search+download by title
-                path, info = await yt_search_dl(item.title)
-                if path and os.path.isfile(str(path)):
-                    return path, False
-            except Exception:
-                pass
-            return None, False
+            else:
+                await stream_audio(
+                    chat_id, next_item.media_path,
+                    title=next_item.title, duration=next_item.duration,
+                )
 
-        # Build platform order: last successful first, then others
-        # Default order: YouTube → SoundCloud → JioSaavn
-        platform_order = []
-        if last_platform == "soundcloud":
-            platform_order = ["soundcloud", "youtube", "jiosaavn"]
-        elif last_platform == "jiosaavn":
-            platform_order = ["jiosaavn", "youtube", "soundcloud"]
-        elif last_platform == "youtube":
-            platform_order = ["youtube", "soundcloud", "jiosaavn"]
-        else:
-            # Default: YouTube first
-            platform_order = ["youtube", "soundcloud", "jiosaavn"]
+            dur = format_duration(next_item.duration)
+            color = _get_next_color()
 
-        LOG.info("Auto-next for %s: trying platforms in order %s for '%s'",
-                 chat_id, platform_order, next_item.title)
+            # Start progress timer for the new track
+            await _start_progress_timer(chat_id, next_item.duration)
 
-        for platform in platform_order:
-            if platform == "soundcloud":
-                fresh_path, fresh_is_stream = await _try_soundcloud(next_item.title)
-                if fresh_path:
-                    _last_successful_platform[chat_id] = "soundcloud"
-                    break
-            elif platform == "jiosaavn":
-                fresh_path, fresh_is_stream = await _try_jiosaavn(next_item.title)
-                if fresh_path:
-                    _last_successful_platform[chat_id] = "jiosaavn"
-                    break
-            elif platform == "youtube":
-                fresh_path, fresh_is_stream = await _try_youtube(next_item)
-                if fresh_path:
-                    _last_successful_platform[chat_id] = "youtube"
-                    break
-
-        if not fresh_path:
-            LOG.error("All platforms failed for auto-next: %s", next_item.title)
+            np_msg = await bot.send_message(
+                chat_id,
+                f"▶️ **এখন চলছে**\n\n"
+                f"🎵 **Title:** {next_item.title}\n"
+                f"⏱ **Duration:** {dur}\n"
+                f"👤 **Requested by:** {next_item.requester}",
+                reply_markup=_control_keyboard(color),
+            )
+            # Track this message so we can delete it when this track ends
+            if chat_id not in _now_playing_messages:
+                _now_playing_messages[chat_id] = []
+            _now_playing_messages[chat_id].append(np_msg)
+            # Don't auto-delete — we'll manually delete when track ends
+        except Exception:
+            LOG.exception("Failed to play next in queue for %s", chat_id)
+            # Send error message before leaving
             try:
                 err_msg = await bot.send_message(
                     chat_id,
@@ -1043,55 +1102,6 @@ async def _on_stream_end(client, update):
             except Exception:
                 pass
             await leave_voice_chat(chat_id)
-            return
-
-        # Update media path and play
-        next_item.media_path = fresh_path
-        next_item.is_stream_url = fresh_is_stream
-
-        if next_item.stream_type == "video":
-            await stream_video(
-                chat_id, next_item.media_path,
-                title=next_item.title, duration=next_item.duration,
-            )
-        else:
-            await stream_audio(
-                chat_id, next_item.media_path,
-                title=next_item.title, duration=next_item.duration,
-            )
-
-        dur = format_duration(next_item.duration)
-        color = _get_next_color()
-
-        # Start progress timer for the new track
-        await _start_progress_timer(chat_id, next_item.duration)
-
-        np_msg = await bot.send_message(
-            chat_id,
-            f"▶️ **এখন চলছে**\n\n"
-            f"🎵 **Title:** {next_item.title}\n"
-            f"⏱ **Duration:** {dur}\n"
-            f"👤 **Requested by:** {next_item.requester}",
-            reply_markup=_control_keyboard(color),
-        )
-        # Track this message so we can delete it when this track ends
-        if chat_id not in _now_playing_messages:
-            _now_playing_messages[chat_id] = []
-        _now_playing_messages[chat_id].append(np_msg)
-        # Don't auto-delete — we'll manually delete when track ends
-    except Exception:
-        LOG.exception("Failed to play next in queue for %s", chat_id)
-        # Send error message before leaving
-        try:
-            err_msg = await bot.send_message(
-                chat_id,
-                f"❌ **পরের গানটি চলানো যায়নি:** {next_item.title}\n\n"
-                "Voice chat থেকে বের হচ্ছে। আবার `/play` দিন।",
-            )
-            await auto_delete_service(err_msg)
-        except Exception:
-            pass
-        await leave_voice_chat(chat_id)
 
 
 # Register the stream-end callback with compatibility for multiple py-tgcalls versions
@@ -1140,9 +1150,12 @@ if pytgcalls is not None:
         try:
             @pytgcalls.on_update()
             async def _raw_update_handler(client, update):
-                # Only handle stream-end type events
+                # Only handle stream-end type events — be strict to avoid false triggers
                 update_type = type(update).__name__.lower()
-                if "end" in update_type or "stream" in update_type:
+                if "end" in update_type and "stream" not in update_type.replace("streamend", "").replace("stream_end", ""):
+                    # Matches: StreamAudioEnded, StreamVideoEnded, StreamEnd, etc.
+                    await _on_stream_end(client, update)
+                elif update_type in ("streamaudioended", "streamvideoended", "streamended", "stream_end"):
                     await _on_stream_end(client, update)
             _registered = True
             LOG.info("Stream-end callback registered via raw pytgcalls.on_update()")
