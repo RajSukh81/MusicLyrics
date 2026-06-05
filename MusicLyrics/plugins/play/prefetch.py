@@ -119,10 +119,10 @@ async def pop_prefetched(chat_id: int, item) -> Optional[tuple[str, bool, str]]:
         # If a prefetch is currently in-flight for this key, wait briefly for it.
         task = _tasks.get(chat_id)
         if task and not task.done() and getattr(task, "_prefetch_key", None) == key:
-            LOG.info("Prefetch in-flight for '%s' — awaiting up to 4s",
+            LOG.info("Prefetch in-flight for '%s' — awaiting up to 12s",
                      getattr(item, "title", "?"))
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=4.0)
+                await asyncio.wait_for(asyncio.shield(task), timeout=12.0)
             except (asyncio.TimeoutError, Exception):
                 pass
             cached = _cache.get(chat_id)

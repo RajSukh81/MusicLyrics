@@ -1164,30 +1164,45 @@ async def set_volume(chat_id: int, volume: int) -> bool:
 
 
 async def leave_voice_chat(chat_id: int) -> None:
-    """Leave the voice chat and clean up."""
+    """Leave the voice chat and clean up.
+
+    Every pytgcalls leave attempt is wrapped in asyncio.wait_for so a hung
+    network call cannot keep the bot stuck in the voice chat. Cleanup of
+    in-memory state always runs even if the actual leave RPC fails.
+    """
     # Stop progress timer
     _stop_progress_timer(chat_id)
 
-    # Try leaving with retries — try BOTH methods on each attempt
+    # Try leaving with retries — try BOTH methods on each attempt.
+    # Each call is bounded by a 3-second timeout so a hung RPC cannot
+    # prevent the bot from cleaning up and reporting that it has left.
     left = False
     for attempt in range(3):
         # Try leave_call (py-tgcalls 2.2.x)
         try:
             if hasattr(pytgcalls, 'leave_call'):
-                await pytgcalls.leave_call(chat_id)
+                await asyncio.wait_for(
+                    pytgcalls.leave_call(chat_id), timeout=3.0
+                )
                 LOG.info("Left voice chat via leave_call: %s (attempt %d)", chat_id, attempt + 1)
                 left = True
                 break
+        except asyncio.TimeoutError:
+            LOG.warning("leave_call timed out for %s (attempt %d)", chat_id, attempt + 1)
         except Exception as e:
             LOG.debug("leave_call attempt %d failed for %s: %s", attempt + 1, chat_id, e)
 
         # Try leave_group_call (older py-tgcalls)
         try:
             if hasattr(pytgcalls, 'leave_group_call'):
-                await pytgcalls.leave_group_call(chat_id)
+                await asyncio.wait_for(
+                    pytgcalls.leave_group_call(chat_id), timeout=3.0
+                )
                 LOG.info("Left voice chat via leave_group_call: %s (attempt %d)", chat_id, attempt + 1)
                 left = True
                 break
+        except asyncio.TimeoutError:
+            LOG.warning("leave_group_call timed out for %s (attempt %d)", chat_id, attempt + 1)
         except Exception as e:
             LOG.debug("leave_group_call attempt %d failed for %s: %s", attempt + 1, chat_id, e)
 
@@ -1196,14 +1211,16 @@ async def leave_voice_chat(chat_id: int) -> None:
             try:
                 # Last resort: try to force leave by playing nothing
                 if hasattr(pytgcalls, 'played_time'):
-                    await pytgcalls.leave_call(chat_id)
+                    await asyncio.wait_for(
+                        pytgcalls.leave_call(chat_id), timeout=3.0
+                    )
                     left = True
                     break
             except Exception:
                 pass
 
         if attempt < 2:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
     if not left:
         LOG.error("Could not leave voice chat %s after 3 attempts — forcing cleanup", chat_id)
