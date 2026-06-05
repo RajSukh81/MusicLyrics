@@ -29,6 +29,7 @@ from MusicLyrics.plugins.play.queue import (
     clear_queue,
     format_duration,
 )
+from MusicLyrics.plugins.play import prefetch as _prefetch
 from MusicLyrics.plugins.play.stream import (
     stream_audio,
     is_active,
@@ -606,6 +607,9 @@ async def play_command(client: Client, message: Message):
 
     # If something is already playing, just queue it
     if position > 1 and is_active(chat_id):
+        # If this newly-queued track is now the next one up, start prefetching it
+        # so the transition is instant when the current track ends.
+        asyncio.create_task(_prefetch.schedule_prefetch(chat_id))
         dur = format_duration(duration)
         color = _get_next_color()
         await status_msg.edit_text(
@@ -651,6 +655,10 @@ async def play_command(client: Client, message: Message):
 
     # Start the progress timer for this track
     await _start_progress_timer(chat_id, duration)
+
+    # Prefetch the next queued track in the background so it plays instantly
+    # when this one ends.
+    asyncio.create_task(_prefetch.schedule_prefetch(chat_id))
 
     dur = format_duration(duration)
     color = _get_next_color()

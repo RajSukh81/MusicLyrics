@@ -124,6 +124,12 @@ async def clear_queue(chat_id: int) -> None:
     async with _lock:
         _queues.pop(chat_id, None)
     LOG.info("Queue %s: cleared.", chat_id)
+    # Drop any prefetched-but-unplayed media so we don't leak files.
+    try:
+        from MusicLyrics.plugins.play.prefetch import clear_prefetch
+        await clear_prefetch(chat_id)
+    except Exception:
+        pass
 
 
 async def toggle_loop(chat_id: int) -> bool:
@@ -143,6 +149,12 @@ async def shuffle_queue(chat_id: int) -> None:
         cq.items[1:] = upcoming
     LOG.info("Queue %s: shuffled %d upcoming tracks.", chat_id,
              max(0, len(cq.items) - 1))
+    # The "next up" track changed — re-validate the prefetch cache.
+    try:
+        from MusicLyrics.plugins.play.prefetch import invalidate_if_changed
+        await invalidate_if_changed(chat_id)
+    except Exception:
+        pass
 
 
 def format_duration(seconds: int) -> str:

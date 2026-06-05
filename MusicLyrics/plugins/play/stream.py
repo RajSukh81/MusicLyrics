@@ -30,6 +30,7 @@ from MusicLyrics.plugins.play.queue import (
 )
 from MusicLyrics.utils.downloader import cleanup
 from MusicLyrics.utils.autodelete import auto_delete_service, auto_delete_playing
+from MusicLyrics.plugins.play import prefetch as _prefetch
 
 # SoundCloud & JioSaavn fallbacks — ultimate last resort when all other methods fail
 from MusicLyrics.plugins.play.platforms.soundcloud import (
@@ -1218,6 +1219,11 @@ async def leave_voice_chat(chat_id: int) -> None:
     _suppress_stream_end.pop(chat_id, None)
     _auto_next_in_progress.discard(chat_id)
     await clear_queue(chat_id)
+    # Drop any in-flight / cached prefetch for this chat
+    try:
+        await _prefetch.clear_prefetch(chat_id)
+    except Exception:
+        pass
 
 
 def is_active(chat_id: int) -> bool:
@@ -1237,8 +1243,55 @@ async def _fresh_resolve_and_play(chat_id: int, item) -> bool:
     """
     import os as _os
 
-    fresh_path = None
-    fresh_is_stream = False
+    # ── Fast path: was this item prefetched already? ────────────────────────
+    cached = await _prefetch.pop_prefetched(chat_id, item)
+    if cached:
+        fresh_path, fresh_is_stream, platform = cached
+        # Validate local file still exists; stream URLs are trusted.
+        if fresh_is_stream or _os.path.isfile(str(fresh_path)):
+            _last_successful_platform[chat_id] = platform
+            item.media_path = fresh_path
+            item.is_stream_url = fresh_is_stream
+            try:
+                if item.stream_type == "video":
+                    await stream_video(chat_id, item.media_path,
+                                       title=item.title, duration=item.duration)
+                else:
+                    await stream_audio(chat_id, item.media_path,
+                                       title=item.title, duration=item.duration)
+                # Kick off prefetch for the *new* next track.
+                asyncio.create_task(_prefetch.schedule_prefetch(chat_id))
+                return True
+            except Exception:
+                LOG.exception("Prefetched media failed to play, falling back to fresh resolve")
+                # fall through to live resolve below
+
+    fresh_path, fresh_is_stream, platform = await _resolve_item(item)
+    if not fresh_path:
+        LOG.error("All platforms failed for fresh_resolve_and_play: %s", item.title)
+        return False
+
+    _last_successful_platform[chat_id] = platform
+    item.media_path = fresh_path
+    item.is_stream_url = fresh_is_stream
+
+    if item.stream_type == "video":
+        await stream_video(chat_id, item.media_path, title=item.title, duration=item.duration)
+    else:
+        await stream_audio(chat_id, item.media_path, title=item.title, duration=item.duration)
+
+    # Now that the current track is playing, prefetch the next one in queue.
+    asyncio.create_task(_prefetch.schedule_prefetch(chat_id))
+    return True
+
+
+async def _resolve_item(item) -> tuple[Optional[str], bool, str]:
+    """Race YouTube / JioSaavn / SoundCloud and return the first successful
+    resolution as ``(media_path_or_url, is_stream_url, platform)``.
+
+    Returns ``(None, False, "")`` if all platforms fail.
+    """
+    import os as _os
 
     # ── Run ALL platforms concurrently ──────────────────────────
     async def _try_youtube():
@@ -1280,7 +1333,7 @@ async def _fresh_resolve_and_play(chat_id: int, item) -> bool:
                     return new_url, True, "youtube"
 
         except Exception as e:
-            LOG.debug("fresh_resolve: YouTube failed for '%s': %s", item.title, e)
+            LOG.debug("resolve_item: YouTube failed for '%s': %s", item.title, e)
         return None, False, ""
 
     async def _try_jiosaavn():
@@ -1313,13 +1366,17 @@ async def _fresh_resolve_and_play(chat_id: int, item) -> bool:
             pass
         return None, False, ""
 
-    LOG.info("fresh_resolve: trying ALL platforms concurrently for %s: '%s'", chat_id, item.title)
+    LOG.info("resolve_item: trying ALL platforms concurrently for '%s'", item.title)
 
     tasks = {
         asyncio.create_task(_try_youtube()): "youtube",
         asyncio.create_task(_try_jiosaavn()): "jiosaavn",
         asyncio.create_task(_try_soundcloud()): "soundcloud",
     }
+
+    fresh_path: Optional[str] = None
+    fresh_is_stream = False
+    chosen_platform = ""
 
     pending = set(tasks.keys())
     while pending:
@@ -1330,8 +1387,8 @@ async def _fresh_resolve_and_play(chat_id: int, item) -> bool:
                 if result_path:
                     fresh_path = result_path
                     fresh_is_stream = result_stream
-                    _last_successful_platform[chat_id] = platform
-                    LOG.info("fresh_resolve: %s succeeded for '%s'", platform, item.title)
+                    chosen_platform = platform
+                    LOG.info("resolve_item: %s succeeded for '%s'", platform, item.title)
                     for p in pending:
                         p.cancel()
                     pending = set()
@@ -1339,19 +1396,11 @@ async def _fresh_resolve_and_play(chat_id: int, item) -> bool:
             except Exception:
                 pass
 
-    if not fresh_path:
-        LOG.error("All platforms failed for fresh_resolve_and_play: %s", item.title)
-        return False
+    return fresh_path, fresh_is_stream, chosen_platform
 
-    item.media_path = fresh_path
-    item.is_stream_url = fresh_is_stream
 
-    if item.stream_type == "video":
-        await stream_video(chat_id, item.media_path, title=item.title, duration=item.duration)
-    else:
-        await stream_audio(chat_id, item.media_path, title=item.title, duration=item.duration)
-
-    return True
+# Register the resolver with the prefetch module (avoids circular import at top).
+_prefetch.register_resolver(_resolve_item)
 
 
 # -- Stream-end callback ---
